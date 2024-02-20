@@ -1,0 +1,1119 @@
+From 14d0f74d77daad507586de9caa638bfeca485d2e Mon Sep 17 00:00:00 2001
+From: Christophe Lyon <christophe.lyon@linaro.org>
+Date: Wed, 14 Apr 2021 14:22:30 +0000
+Subject: [PATCH 3/7] ARM/FDPIC: Add GDB support
+
+This patch mainly adds gdb/solib-fdpic.c which is based upon
+solib-dsbt.c and solib-frv.c
+
+Co-authored-by: Mickael Guene  <mickael.guene@st.com>
+Co-authored-by: Christophe Lyon  <christophe.lyon@st.com>
+Co-authored-by: Ben Wolsieffer <ben.wolsieffer@hefring.com>
+
+	* gdb/Makefile.in: Add solib-fdpic.o to ALL_TARGET_OBS.
+	* gdb/arm-linux-tdep.c (arm_linux_init_abi): Initialize FDPIC
+	handlers.
+	* gdb/arm-tdep.c (arm_gdbarch_init): Initialize is_fdpic as
+	needed.
+	* gdb/arm-tdep.h (gdbarch_tdep): Add is_fdpic field.
+	(fdpic_so_ops, fdpic_fetch_objfile_link_map): Declare.
+	* gdb/configure.tgt: Add solib-fdpic.o to gdb_target_obs and
+	adjust target match.
+	* gdb/solib-fdpic.c: New file.
+	* include/elf/arm.h (EF_ARM_FDPIC): New define.
+---
+ gdb/Makefile.in      |   1 +
+ gdb/arm-linux-tdep.c |  16 +-
+ gdb/arm-tdep.c       |   8 +-
+ gdb/arm-tdep.h       |   5 +
+ gdb/configure.tgt    |   5 +-
+ gdb/solib-fdpic.c    | 932 +++++++++++++++++++++++++++++++++++++++++++
+ include/elf/arm.h    |   1 +
+ 7 files changed, 961 insertions(+), 7 deletions(-)
+ create mode 100644 gdb/solib-fdpic.c
+
+diff --git a/gdb/Makefile.in b/gdb/Makefile.in
+index 29ad9030273..c2392a53011 100644
+--- a/gdb/Makefile.in
++++ b/gdb/Makefile.in
+@@ -830,6 +830,7 @@ ALL_TARGET_OBS = \
+ 	solib-aix.o \
+ 	solib-darwin.o \
+ 	solib-dsbt.o \
++	solib-fdpic.o \
+ 	solib-frv.o \
+ 	solib-svr4.o \
+ 	sparc-linux-tdep.o \
+diff --git a/gdb/arm-linux-tdep.c b/gdb/arm-linux-tdep.c
+index 4cb43ec9bfd..90771926bb2 100644
+--- a/gdb/arm-linux-tdep.c
++++ b/gdb/arm-linux-tdep.c
+@@ -26,6 +26,7 @@
+ #include "regcache.h"
+ #include "solib-svr4.h"
+ #include "osabi.h"
++#include "solib.h"
+ #include "regset.h"
+ #include "trad-frame.h"
+ #include "tramp-frame.h"
+@@ -1762,8 +1763,11 @@ arm_linux_init_abi (struct gdbarch_info info,
+     }
+   tdep->jb_elt_size = ARM_LINUX_JB_ELEMENT_SIZE;
+ 
+-  set_solib_svr4_fetch_link_map_offsets
+-    (gdbarch, svr4_ilp32_fetch_link_map_offsets);
++  if (tdep->is_fdpic)
++    set_solib_ops (gdbarch, &fdpic_so_ops);
++  else
++    set_solib_svr4_fetch_link_map_offsets (gdbarch,
++					   svr4_ilp32_fetch_link_map_offsets);
+ 
+   /* Single stepping.  */
+   set_gdbarch_software_single_step (gdbarch, arm_linux_software_single_step);
+@@ -1773,8 +1777,12 @@ arm_linux_init_abi (struct gdbarch_info info,
+   set_gdbarch_skip_solib_resolver (gdbarch, glibc_skip_solib_resolver);
+ 
+   /* Enable TLS support.  */
+-  set_gdbarch_fetch_tls_load_module_address (gdbarch,
+-					     svr4_fetch_objfile_link_map);
++  if (tdep->is_fdpic)
++    set_gdbarch_fetch_tls_load_module_address (gdbarch,
++					       fdpic_fetch_objfile_link_map);
++  else
++    set_gdbarch_fetch_tls_load_module_address (gdbarch,
++					       svr4_fetch_objfile_link_map);
+ 
+   tramp_frame_prepend_unwinder (gdbarch,
+ 				&arm_linux_sigreturn_tramp_frame);
+diff --git a/gdb/arm-tdep.c b/gdb/arm-tdep.c
+index a628f9d92fd..11a2c7481f3 100644
+--- a/gdb/arm-tdep.c
++++ b/gdb/arm-tdep.c
+@@ -8937,6 +8937,7 @@ arm_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
+   tdesc_arch_data_up tdesc_data;
+   int i;
+   bool is_m = false;
++  bool is_fdpic = false;
+   int vfp_register_count = 0;
+   bool have_vfp_pseudos = false, have_neon_pseudos = false;
+   bool have_wmmx_registers = false;
+@@ -8970,7 +8971,7 @@ arm_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
+ 		 anyway, so assume APCS.  */
+ 	      arm_abi = ARM_ABI_APCS;
+ 	    }
+-	  else if (ei_osabi == ELFOSABI_NONE || ei_osabi == ELFOSABI_GNU)
++	  else if (ei_osabi == ELFOSABI_NONE || ei_osabi == ELFOSABI_GNU || ei_osabi == ELFOSABI_ARM_FDPIC)
+ 	    {
+ 	      int eabi_ver = EF_ARM_EABI_VERSION (e_flags);
+ 
+@@ -8984,6 +8985,10 @@ arm_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
+ 		case EF_ARM_EABI_VER4:
+ 		case EF_ARM_EABI_VER5:
+ 		  arm_abi = ARM_ABI_AAPCS;
++
++		  if (ei_osabi == ELFOSABI_ARM_FDPIC || e_flags & EF_ARM_FDPIC)
++		    is_fdpic = true;
++
+ 		  /* EABI binaries default to VFP float ordering.
+ 		     They may also contain build attributes that can
+ 		     be used to identify if the VFP argument-passing
+@@ -9290,6 +9295,7 @@ arm_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
+   tdep->arm_abi = arm_abi;
+   tdep->fp_model = fp_model;
+   tdep->is_m = is_m;
++  tdep->is_fdpic = is_fdpic;
+   tdep->have_fpa_registers = have_fpa_registers;
+   tdep->have_wmmx_registers = have_wmmx_registers;
+   gdb_assert (vfp_register_count == 0
+diff --git a/gdb/arm-tdep.h b/gdb/arm-tdep.h
+index bbc1b9b5b8e..6d07e35cd3d 100644
+--- a/gdb/arm-tdep.h
++++ b/gdb/arm-tdep.h
+@@ -108,6 +108,7 @@ struct gdbarch_tdep
+   bool have_neon;		/* Do we have a NEON unit?  */
+ 
+   bool is_m;			/* Does the target follow the "M" profile.  */
++  bool is_fdpic;		/* Is the loaded binary a FDPIC one. */
+   CORE_ADDR lowest_pc;		/* Lowest address at which instructions 
+ 				   will appear.  */
+ 
+@@ -294,4 +295,8 @@ const target_desc *arm_read_description (arm_fp_type fp_type);
+    type.  */
+ const target_desc *arm_read_mprofile_description (arm_m_profile_type m_type);
+ 
++/* FDPIC structure and api.  */
++extern struct target_so_ops fdpic_so_ops;
++extern CORE_ADDR fdpic_fetch_objfile_link_map (struct objfile *objfile);
++
+ #endif /* arm-tdep.h */
+diff --git a/gdb/configure.tgt b/gdb/configure.tgt
+index 97a5a57c378..1fa8865f08d 100644
+--- a/gdb/configure.tgt
++++ b/gdb/configure.tgt
+@@ -169,10 +169,11 @@ arm*-wince-pe | arm*-*-mingw32ce*)
+ 	# Target: ARM based machine running Windows CE (win32)
+ 	gdb_target_obs="arm-wince-tdep.o windows-tdep.o"
+ 	;;
+-arm*-*-linux*)
++arm*-*-*linux*)
+ 	# Target: ARM based machine running GNU/Linux
+ 	gdb_target_obs="arch/arm-linux.o arm-linux-tdep.o glibc-tdep.o \
+-			solib-svr4.o symfile-mem.o linux-tdep.o linux-record.o"
++			solib-svr4.o solib-fdpic.o symfile-mem.o linux-tdep.o \
++			linux-record.o"
+ 	;;
+ arm*-*-freebsd*)
+ 	# Target: FreeBSD/arm
+diff --git a/gdb/solib-fdpic.c b/gdb/solib-fdpic.c
+new file mode 100644
+index 00000000000..b53da6a1295
+--- /dev/null
++++ b/gdb/solib-fdpic.c
+@@ -0,0 +1,932 @@
++/* Handle fdpic shared libraries for GDB, the GNU Debugger.
++
++   Copyright (C) 2015-2023 Free Software Foundation, Inc.
++
++   This file is part of GDB.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; either version 3 of the License, or
++   (at your option) any later version.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
++
++
++#include "defs.h"
++#include "inferior.h"
++#include "gdbcore.h"
++#include "solib.h"
++#include "solist.h"
++#include "arm-tdep.h"
++#include "objfiles.h"
++#include "symtab.h"
++#include "language.h"
++#include "command.h"
++#include "gdbcmd.h"
++#include "elf-bfd.h"
++#include "gdb_bfd.h"
++
++/*
++  TODO:
++  - implement endianess support
++*/
++
++/* Representation of loadmap and related structs for the ARM FDPIC ABI.  */
++
++/* External versions; the size and alignment of the fields should be
++   the same as those on the target.  When loaded, the placement of
++   the bits in each field will be the same as on the target.  */
++typedef gdb_byte ext_Elf32_Half[2];
++typedef gdb_byte ext_Elf32_Addr[4];
++typedef gdb_byte ext_Elf32_Word[4];
++
++struct ext_elf32_fdpic_loadseg
++{
++  /* Core address to which the segment is mapped.  */
++  ext_Elf32_Addr addr;
++  /* VMA recorded in the program header.  */
++  ext_Elf32_Addr p_vaddr;
++  /* Size of this segment in memory.  */
++  ext_Elf32_Word p_memsz;
++};
++
++struct ext_elf32_fdpic_loadmap {
++  /* Protocol version number, must be zero.  */
++  ext_Elf32_Half version;
++  /* Number of segments in this map.  */
++  ext_Elf32_Half nsegs;
++  /* The actual memory map.  */
++  struct ext_elf32_fdpic_loadseg segs[1 /* nsegs, actually */];
++};
++
++/* Internal versions; the types are GDB types and the data in each
++   of the fields is (or will be) decoded from the external struct
++   for ease of consumption.  */
++struct int_elf32_fdpic_loadseg
++{
++  /* Core address to which the segment is mapped.  */
++  CORE_ADDR addr;
++  /* VMA recorded in the program header.  */
++  CORE_ADDR p_vaddr;
++  /* Size of this segment in memory.  */
++  long p_memsz;
++};
++
++struct int_elf32_fdpic_loadmap {
++  /* Protocol version number, must be zero.  */
++  int version;
++  /* Number of segments in this map.  */
++  int nsegs;
++  /* The actual memory map.  */
++  struct int_elf32_fdpic_loadseg segs[1 /* nsegs, actually */];
++};
++
++/* External link_map and elf32_dsbt_loadaddr struct definitions.  */
++
++typedef gdb_byte ext_ptr[4];
++
++struct ext_elf32_fdpic_loadaddr
++{
++  ext_ptr map;			/* struct elf32_fdpic_loadmap *map; */
++  ext_ptr got_value;
++};
++
++struct ext_link_map
++{
++  struct ext_elf32_fdpic_loadaddr l_addr;
++
++  /* Absolute file name object was found in.  */
++  ext_ptr l_name;		/* char *l_name; */
++
++  /* Dynamic section of the shared object.  */
++  ext_ptr l_ld;			/* ElfW(Dyn) *l_ld; */
++
++  /* Chain of loaded objects.  */
++  ext_ptr l_next, l_prev;	/* struct link_map *l_next, *l_prev; */
++};
++
++struct lm_info_fdpic : public lm_info_base
++{
++  ~lm_info_fdpic ()
++  {
++    xfree (this->map);
++  }
++
++  int_elf32_fdpic_loadmap *map = nullptr;
++  CORE_ADDR lm_addr = 0;
++  CORE_ADDR l_addr = 0;
++  CORE_ADDR got_value = 0;
++
++  /* Absolute file name object was found in.  */
++  CORE_ADDR l_name = 0;
++  /* Dynamic section of the shared object.  */
++  CORE_ADDR l_ld = 0;
++  /* Chain of loaded objects. */
++  CORE_ADDR l_next = 0, l_prev = 0;
++};
++
++/* Per pspace fdpic specific data.  */
++struct fdpic_info
++{
++  lm_info_fdpic *main_executable_lm_info = nullptr;
++  int is_static_binary = 0;
++  CORE_ADDR lm_base_cache = 0;
++  CORE_ADDR main_lm_addr = 0;
++  CORE_ADDR interp_text_sect_low = 0;
++  CORE_ADDR interp_text_sect_high = 0;
++  CORE_ADDR interp_plt_sect_low = 0;
++  CORE_ADDR interp_plt_sect_high = 0;
++};
++
++/* Flag which indicates whether internal debug messages should be printed.  */
++static unsigned int solib_fdpic_debug = 0;
++
++/* Per-program-space data key.  */
++static program_space_key<fdpic_info> solib_fdpic_pspace_data;
++
++/* Helper function for gdb_bfd_lookup_symbol.  */
++static int
++cmp_name (const asymbol *sym, const void *data)
++{
++  return (strcmp (sym->name, (const char *) data) == 0);
++}
++
++/* Given address LDMADDR, fetch and decode the loadmap at that address.
++   Return NULL if there is a problem reading the target memory or if
++   there doesn't appear to be a loadmap at the given address.  The
++   allocated space (representing the loadmap) returned by this
++   function may be freed via a single call to xfree().  */
++
++static struct int_elf32_fdpic_loadmap *
++fetch_loadmap (CORE_ADDR ldmaddr)
++{
++  enum bfd_endian byte_order = gdbarch_byte_order (target_gdbarch ());
++  struct ext_elf32_fdpic_loadmap ext_ldmbuf_partial;
++  struct ext_elf32_fdpic_loadmap *ext_ldmbuf;
++  struct int_elf32_fdpic_loadmap *int_ldmbuf;
++  int ext_ldmbuf_size, int_ldmbuf_size;
++  int version, seg, nsegs;
++
++  /* Fetch initial portion of the loadmap.  */
++  if (target_read_memory (ldmaddr, (gdb_byte *) &ext_ldmbuf_partial,
++			  sizeof ext_ldmbuf_partial))
++    {
++      /* Problem reading the target's memory.  */
++      return NULL;
++    }
++
++  /* Extract the version.  */
++  version = extract_unsigned_integer (ext_ldmbuf_partial.version,
++				      sizeof ext_ldmbuf_partial.version,
++				      byte_order);
++  if (version != 0)
++    {
++      /* We only handle version 0.  */
++      return NULL;
++    }
++
++  /* Extract the number of segments.  */
++  nsegs = extract_unsigned_integer (ext_ldmbuf_partial.nsegs,
++				    sizeof ext_ldmbuf_partial.nsegs,
++				    byte_order);
++
++  if (nsegs <= 0)
++    return NULL;
++
++  /* Allocate space for the complete (external) loadmap.  */
++  ext_ldmbuf_size = sizeof (struct ext_elf32_fdpic_loadmap)
++	       + (nsegs - 1) * sizeof (struct ext_elf32_fdpic_loadseg);
++  ext_ldmbuf = (struct ext_elf32_fdpic_loadmap *) xmalloc (ext_ldmbuf_size);
++
++  /* Copy over the portion of the loadmap that's already been read.  */
++  memcpy (ext_ldmbuf, &ext_ldmbuf_partial, sizeof ext_ldmbuf_partial);
++
++  /* Read the rest of the loadmap from the target.  */
++  if (target_read_memory (ldmaddr + sizeof ext_ldmbuf_partial,
++			  (gdb_byte *) ext_ldmbuf + sizeof ext_ldmbuf_partial,
++			  ext_ldmbuf_size - sizeof ext_ldmbuf_partial))
++    {
++      /* Couldn't read rest of the loadmap.  */
++      xfree (ext_ldmbuf);
++      return NULL;
++    }
++
++  /* Allocate space into which to put information extract from the
++     external loadsegs.  I.e, allocate the internal loadsegs.  */
++  int_ldmbuf_size = sizeof (struct int_elf32_fdpic_loadmap)
++	       + (nsegs - 1) * sizeof (struct int_elf32_fdpic_loadseg);
++  int_ldmbuf = (struct int_elf32_fdpic_loadmap *) xmalloc (int_ldmbuf_size);
++
++  /* Place extracted information in internal structs.  */
++  int_ldmbuf->version = version;
++  int_ldmbuf->nsegs = nsegs;
++  for (seg = 0; seg < nsegs; seg++)
++    {
++      int_ldmbuf->segs[seg].addr
++	= extract_unsigned_integer (ext_ldmbuf->segs[seg].addr,
++				    sizeof (ext_ldmbuf->segs[seg].addr),
++				    byte_order);
++      int_ldmbuf->segs[seg].p_vaddr
++	= extract_unsigned_integer (ext_ldmbuf->segs[seg].p_vaddr,
++				    sizeof (ext_ldmbuf->segs[seg].p_vaddr),
++				    byte_order);
++      int_ldmbuf->segs[seg].p_memsz
++	= extract_unsigned_integer (ext_ldmbuf->segs[seg].p_memsz,
++				    sizeof (ext_ldmbuf->segs[seg].p_memsz),
++				    byte_order);
++    }
++
++  xfree (ext_ldmbuf);
++  return int_ldmbuf;
++}
++
++/* Decode int_elf32_fdpic_loadmap from BUF.  */
++
++static struct int_elf32_fdpic_loadmap *
++decode_loadmap (const gdb_byte *buf)
++{
++  enum bfd_endian byte_order = gdbarch_byte_order (target_gdbarch ());
++  const struct ext_elf32_fdpic_loadmap *ext_ldmbuf;
++  struct int_elf32_fdpic_loadmap *int_ldmbuf;
++
++  int version, seg, nsegs;
++  int int_ldmbuf_size;
++
++  ext_ldmbuf = (struct ext_elf32_fdpic_loadmap *) buf;
++
++  /* Extract the version.  */
++  version = extract_unsigned_integer (ext_ldmbuf->version,
++				      sizeof ext_ldmbuf->version,
++				      byte_order);
++  if (version != 0)
++    {
++      /* We only handle version 0.  */
++      return NULL;
++    }
++
++  /* Extract the number of segments.  */
++  nsegs = extract_unsigned_integer (ext_ldmbuf->nsegs,
++				    sizeof ext_ldmbuf->nsegs,
++				    byte_order);
++
++  if (nsegs <= 0)
++    return NULL;
++
++  /* Allocate space into which to put information extract from the
++     external loadsegs.  I.e, allocate the internal loadsegs.  */
++  int_ldmbuf_size = (sizeof (struct int_elf32_fdpic_loadmap)
++		     + (nsegs - 1) * sizeof (struct int_elf32_fdpic_loadseg));
++  int_ldmbuf = (struct int_elf32_fdpic_loadmap *) xmalloc (int_ldmbuf_size);
++
++  /* Place extracted information in internal structs.  */
++  int_ldmbuf->version = version;
++  int_ldmbuf->nsegs = nsegs;
++  for (seg = 0; seg < nsegs; seg++)
++    {
++      int_ldmbuf->segs[seg].addr
++	= extract_unsigned_integer (ext_ldmbuf->segs[seg].addr,
++				    sizeof (ext_ldmbuf->segs[seg].addr),
++				    byte_order);
++      int_ldmbuf->segs[seg].p_vaddr
++	= extract_unsigned_integer (ext_ldmbuf->segs[seg].p_vaddr,
++				    sizeof (ext_ldmbuf->segs[seg].p_vaddr),
++				    byte_order);
++      int_ldmbuf->segs[seg].p_memsz
++	= extract_unsigned_integer (ext_ldmbuf->segs[seg].p_memsz,
++				    sizeof (ext_ldmbuf->segs[seg].p_memsz),
++				    byte_order);
++    }
++
++  return int_ldmbuf;
++}
++
++static void
++dump_loadmap (struct int_elf32_fdpic_loadmap *loadmap)
++{
++  if (loadmap)
++    {
++      int i;
++      fprintf_unfiltered (gdb_stdlog,
++			  "*** LOADMAP : %d segments detected\n", loadmap->nsegs);
++
++      for (i = 0; i < loadmap->nsegs; i++)
++	fprintf_unfiltered (gdb_stdlog,
++			    " - seg[%d] : %s map to %s for %ld bytes\n", i,
++			    hex_string_custom (loadmap->segs[i].p_vaddr, 8),
++			    hex_string_custom (loadmap->segs[i].addr, 8),
++			    loadmap->segs[i].p_memsz);
++    }
++}
++
++static CORE_ADDR
++displacement_from_map (struct int_elf32_fdpic_loadmap *map, CORE_ADDR addr)
++{
++  int seg;
++
++  for (seg = 0; seg < map->nsegs; seg++)
++    {
++      if (map->segs[seg].p_vaddr <= addr
++	  && addr < map->segs[seg].p_vaddr + map->segs[seg].p_memsz)
++	return map->segs[seg].addr - map->segs[seg].p_vaddr;
++    }
++
++  return 0;
++}
++
++static struct fdpic_info *
++get_fdpic_info (void)
++{
++  struct fdpic_info *info;
++
++  info = solib_fdpic_pspace_data.get (current_program_space);
++
++  if (info != NULL)
++    return info;
++
++  return solib_fdpic_pspace_data.emplace (current_program_space);
++}
++
++static std::unique_ptr<lm_info_fdpic>
++lm_info_read (CORE_ADDR lm_addr)
++{
++  std::unique_ptr<lm_info_fdpic> lm_info;
++  struct ext_link_map lm;
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"Reading link map from %s\n",
++			hex_string_custom (lm_addr, 8));
++
++  if (target_read_memory (lm_addr, (gdb_byte *) &lm, sizeof lm) != 0)
++    warning (_("Error reading shared library list entry at %s"),
++	     paddress (target_gdbarch (), lm_addr));
++  else
++    {
++      enum bfd_endian byte_order = gdbarch_byte_order (target_gdbarch ());
++
++      lm_info.reset (new lm_info_fdpic);
++      lm_info->lm_addr = lm_addr;
++
++      lm_info->l_addr
++	= extract_unsigned_integer (lm.l_addr.map, sizeof (lm.l_addr.map),
++				    byte_order);
++      lm_info->got_value
++	= extract_unsigned_integer (lm.l_addr.got_value,
++				    sizeof (lm.l_addr.got_value),
++				    byte_order);
++      lm_info->l_name
++	= extract_unsigned_integer (lm.l_name, sizeof (lm.l_name), byte_order);
++      lm_info->l_ld
++	= extract_unsigned_integer (lm.l_ld, sizeof (lm.l_ld), byte_order);
++      lm_info->l_next
++	= extract_unsigned_integer (lm.l_next, sizeof (lm.l_next), byte_order);
++      lm_info->l_prev
++	= extract_unsigned_integer (lm.l_prev, sizeof (lm.l_prev), byte_order);
++    }
++
++  return lm_info;
++}
++
++static struct int_elf32_fdpic_loadmap *
++fdpic_get_initial_loadmaps (int is_interpreter)
++{
++  gdb::optional<gdb::byte_vector> buf
++    = target_read_alloc (current_inferior ()->top_target (),
++			 TARGET_OBJECT_FDPIC,
++			 is_interpreter ? "interp" : "exec");
++  struct int_elf32_fdpic_loadmap *res;
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog, "  %s : %d\n", __FUNCTION__, is_interpreter);
++
++  /* Read raw loadmap.  */
++  if (!buf || buf->empty ())
++    {
++      if (!is_interpreter)
++	error (_("Error reading FDPIC exec loadmap"));
++      return NULL;
++    }
++  else if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"   - Successfully loaded %s loadmap\n",
++			is_interpreter ? "interpreter" : "executable");
++
++  res = decode_loadmap (buf->data ());
++  if (solib_fdpic_debug)
++    dump_loadmap (res);
++
++  return res;
++}
++
++static void
++fdpic_relocate_main_executable (void)
++{
++  struct int_elf32_fdpic_loadmap *loadmap;
++  int changed;
++  struct obj_section *osect;
++  struct fdpic_info *info = get_fdpic_info ();
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog, " %s\n", __FUNCTION__);
++
++  /* Get interpreter loadmap to see if we have a static or dynamic binary.  */
++  loadmap = fdpic_get_initial_loadmaps (1);
++  if (!loadmap)
++    info->is_static_binary = 1;
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"*** %s binary detected\n",
++			info->is_static_binary
++			? "Statically linked" : "Dynamically linked");
++  xfree (loadmap);
++
++  delete info->main_executable_lm_info;
++  info->main_executable_lm_info = new lm_info_fdpic;
++  info->main_executable_lm_info->map = fdpic_get_initial_loadmaps (0);
++
++  /* Now relocate sections.  */
++  objfile *objf = current_program_space->symfile_object_file;
++  section_offsets new_offsets (objf->section_offsets.size ());
++  changed = 0;
++
++  /* Compute new offset for all sections.  */
++  ALL_OBJFILE_OSECTIONS (objf, osect)
++    {
++      CORE_ADDR orig_addr, addr, offset;
++      int osect_idx;
++      int seg;
++
++      osect_idx = osect - objf->sections;
++      /* Current address of section.  */
++      addr = osect->addr ();
++      /* Offset from where this section started.  */
++      offset = objf->section_offsets[osect_idx];
++      /* Original address prior to any past relocations.  */
++      orig_addr = addr - offset;
++
++      loadmap = info->main_executable_lm_info->map;
++      for (seg = 0; seg < loadmap->nsegs; seg++)
++	{
++	  if (loadmap->segs[seg].p_vaddr <= orig_addr
++	      && orig_addr < loadmap->segs[seg].p_vaddr + loadmap->segs[seg].p_memsz)
++	    {
++	      new_offsets[osect_idx]
++		= loadmap->segs[seg].addr - loadmap->segs[seg].p_vaddr;
++
++	      if (solib_fdpic_debug > 1)
++		fprintf_unfiltered (gdb_stdlog,
++				    "section %s[%d] relocate from %s to %s [%d]\n",
++				    osect->the_bfd_section->name,
++				    osect_idx,
++				    hex_string_custom ((int)orig_addr, 8),
++				    hex_string_custom ((int) (orig_addr
++							      + new_offsets[osect_idx]),
++						       8),
++				    seg);
++
++	      if (new_offsets[osect_idx] != offset)
++		changed = 1;
++	      break;
++	    }
++	}
++    }
++  /* Relocate if we have modifications.  */
++  if (changed)
++    objfile_relocate (objf, new_offsets);
++}
++
++static CORE_ADDR
++main_got (void)
++{
++  struct bound_minimal_symbol got_sym;
++
++  objfile *objf = current_program_space->symfile_object_file;
++  got_sym = lookup_minimal_symbol ("_GLOBAL_OFFSET_TABLE_", NULL, objf);
++  if (got_sym.minsym == 0)
++    return 0;
++
++  return BMSYMBOL_VALUE_ADDRESS (got_sym);
++}
++
++static CORE_ADDR
++lm_base (void)
++{
++  enum bfd_endian byte_order = gdbarch_byte_order (target_gdbarch ());
++  struct bound_minimal_symbol got_sym;
++  CORE_ADDR addr;
++  gdb_byte buf[4];
++  struct fdpic_info *info = get_fdpic_info ();
++
++  /* One of our assumptions is that the main executable has been relocated.
++     Bail out if this has not happened.  (Note that post_create_inferior()
++     in infcmd.c will call solib_add prior to solib_create_inferior_hook().
++     If we allow this to happen, lm_base_cache will be initialized with
++     a bogus value.  */
++  if (info->main_executable_lm_info == 0)
++    return 0;
++
++  /* If we already have a cached value, return it.  */
++  if (info->lm_base_cache)
++    return info->lm_base_cache;
++
++  got_sym = lookup_minimal_symbol ("_GLOBAL_OFFSET_TABLE_", NULL,
++				   current_program_space->symfile_object_file);
++  if (got_sym.minsym == 0)
++    {
++      if (solib_fdpic_debug)
++	fprintf_unfiltered (gdb_stdlog,
++			    "lm_base: _GLOBAL_OFFSET_TABLE_ not found.\n");
++      return 0;
++    }
++  addr = BMSYMBOL_VALUE_ADDRESS (got_sym) + 8;
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"lm_base: _GLOBAL_OFFSET_TABLE_ + 8 = %s\n",
++			hex_string_custom (addr, 8));
++
++  if (target_read_memory (addr, buf, sizeof buf) != 0)
++    return 0;
++
++  info->lm_base_cache = extract_unsigned_integer (buf, sizeof buf, byte_order);
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"lm_base: lm_base_cache = %s\n",
++			hex_string_custom (info->lm_base_cache, 8));
++
++  return info->lm_base_cache;
++}
++
++static void
++enable_break_failure_warning (void)
++{
++  warning (_("Unable to find dynamic linker breakpoint function.\n"
++	     "GDB will be unable to debug shared library initializers\n"
++	     "and track explicitly loaded dynamic code."));
++}
++
++static int
++enable_break (void)
++{
++  asection *interp_sect;
++  struct fdpic_info *info;
++
++  if (current_program_space->exec_bfd () == NULL)
++    return 0;
++
++  if (!target_has_execution ())
++    return 0;
++
++  info = get_fdpic_info ();
++
++  info->interp_text_sect_low = 0;
++  info->interp_text_sect_high = 0;
++  info->interp_plt_sect_low = 0;
++  info->interp_plt_sect_high = 0;
++
++  interp_sect = bfd_get_section_by_name (current_program_space->exec_bfd (),
++					 ".interp");
++  if (interp_sect)
++    {
++      unsigned int interp_sect_size;
++      char *buf;
++      CORE_ADDR addr;
++      struct int_elf32_fdpic_loadmap *ldm;
++      int ret;
++
++      /* Read the contents of the .interp section into a local buffer;
++	 the contents specify the dynamic linker this program uses.  */
++      interp_sect_size = bfd_section_size (interp_sect);
++      buf = (char*) alloca (interp_sect_size);
++      bfd_get_section_contents (current_program_space->exec_bfd (),
++				interp_sect, buf, 0, interp_sect_size);
++
++      /* Now we need to figure out where the dynamic linker was
++	 loaded so that we can load its symbols and place a breakpoint
++	 in the dynamic linker itself.  */
++
++      gdb_bfd_ref_ptr tmp_bfd;
++      try
++	{
++	  tmp_bfd = solib_bfd_open (buf);
++	}
++      catch (const gdb_exception &ex)
++	{
++	}
++
++      if (tmp_bfd == NULL)
++	{
++	  enable_break_failure_warning ();
++	  return 0;
++	}
++      ldm = fdpic_get_initial_loadmaps (1);
++
++      /* Record the relocated start and end address of the dynamic linker
++	 text and plt section for fdpic_in_dynsym_resolve_code.  */
++      interp_sect = bfd_get_section_by_name (tmp_bfd.get (), ".text");
++      if (interp_sect)
++	{
++	  info->interp_text_sect_low = bfd_section_vma (interp_sect);
++	  info->interp_text_sect_low
++	    += displacement_from_map (ldm, info->interp_text_sect_low);
++	  info->interp_text_sect_high
++	    = info->interp_text_sect_low + bfd_section_size (interp_sect);
++	}
++      interp_sect = bfd_get_section_by_name (tmp_bfd.get (), ".plt");
++      if (interp_sect)
++	{
++	  info->interp_plt_sect_low = bfd_section_vma (interp_sect);
++	  info->interp_plt_sect_low
++	    += displacement_from_map (ldm, info->interp_plt_sect_low);
++	  info->interp_plt_sect_high
++	    = info->interp_plt_sect_low + bfd_section_size (interp_sect);
++	}
++
++      /* Got load address of _dl_debug_addr.  */
++      addr = gdb_bfd_lookup_symbol (tmp_bfd.get (), cmp_name, "_dl_debug_state");
++      if (addr != 0)
++	{
++	  if (solib_fdpic_debug)
++	    fprintf_unfiltered (gdb_stdlog,
++				"enable_break: _dl_debug_state (prior to relocation) = %s\n",
++				hex_string_custom (addr, 8));
++	  addr += displacement_from_map (ldm, addr);
++
++	  if (solib_fdpic_debug)
++	    fprintf_unfiltered (gdb_stdlog,
++				"enable_break: _dl_debug_state (after relocation) = %s\n",
++				hex_string_custom (addr, 8));
++
++	  /* Now (finally!) create the solib breakpoint.  */
++	  /* In case we have a thumb entry then reset lower bits.  */
++	  addr &= ~1;
++	  create_solib_event_breakpoint (target_gdbarch (), addr);
++
++	  ret = 1;
++	}
++      else
++	{
++	  if (solib_fdpic_debug)
++	    fprintf_unfiltered (gdb_stdlog,
++				"enable_break: _dl_debug_state is not found\n");
++	  ret = 0;
++	}
++
++      /* We're done with the loadmap.  */
++      xfree (ldm);
++
++      return ret;
++    }
++  /* Tell the user we couldn't set a dynamic linker breakpoint.  */
++  enable_break_failure_warning ();
++
++  /* Failure return.  */
++  return 0;
++}
++
++/* Shared object operations.  */
++static int
++fdpic_in_dynsym_resolve_code (CORE_ADDR pc)
++{
++  struct fdpic_info *info = get_fdpic_info ();
++  int res;
++
++  res = ((pc >= info->interp_text_sect_low && pc < info->interp_text_sect_high)
++	 || (pc >= info->interp_plt_sect_low && pc < info->interp_plt_sect_high)
++	 || in_plt_section (pc)
++	 || in_gnu_ifunc_stub (pc));
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"%s\n : pc = %s => %d\n", __FUNCTION__,
++			hex_string_custom ((int)pc, 8), res);
++
++  return res;
++}
++
++static int
++fdpic_open_symbol_file_object (int from_tty)
++{
++  /* Unimplemented.  */
++  return 0;
++}
++
++static struct so_list *
++fdpic_current_sos (void)
++{
++  /* TODO: endianess support.  */
++  struct fdpic_info *info = get_fdpic_info ();
++  CORE_ADDR lm_addr;
++  CORE_ADDR mgot;
++  struct so_list *sos_head = NULL;
++  struct so_list **sos_next_ptr = &sos_head;
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog, "%s\n", __FUNCTION__);
++
++  /* Make sure that the main executable has been relocated.  This is
++     required in order to find the address of the global offset table,
++     which in turn is used to find the link map info.  (See lm_base
++     for details.)
++
++     Note that the relocation of the main executable is also performed
++     by solib_create_inferior_hook, however, in the case of core
++     files, this hook is called too late in order to be of benefit to
++     solib_add.  solib_add eventually calls this function,
++     fdpic_current_sos, and also precedes the call to
++     solib_create_inferior_hook.   (See post_create_inferior in
++     infcmd.c.)  */
++  if (info->main_executable_lm_info == 0 && core_bfd != NULL)
++    fdpic_relocate_main_executable ();
++
++  /* Check for a static binary.  */
++  if (info->is_static_binary)
++    return NULL;
++
++  /* Locate the address of the first link map struct.  */
++  lm_addr = lm_base ();
++
++  /* Fetch the GOT corresponding to the main executable.  */
++  mgot = main_got ();
++
++  while (lm_addr)
++    {
++      std::unique_ptr<lm_info_fdpic> lm_buf = lm_info_read (lm_addr);
++      CORE_ADDR lm_addr_next = lm_buf->l_next;
++      struct so_list *sop;
++
++      /* Don't add main executable.  */
++      if (lm_buf->got_value != mgot)
++	{
++	  lm_buf->map = fetch_loadmap (lm_buf->l_addr);
++	  if (lm_buf->map == NULL)
++	    {
++	      warning (_("fdpic_current_sos: Unable to fetch load map."
++			 " Shared object chain may be incomplete."));
++	      break;
++	    }
++	  sop = XCNEW (struct so_list);
++	  /* Fetch the name.  */
++	  gdb::unique_xmalloc_ptr<char> name_buf
++	    = target_read_string (lm_buf->l_name,
++	    			  SO_NAME_MAX_PATH_SIZE - 1);
++	  if (name_buf == nullptr)
++	    warning (_("Can't read pathname for link map entry."));
++	  else
++	    {
++	      if (solib_fdpic_debug)
++		fprintf_unfiltered (gdb_stdlog, "  so name %s\n", name_buf.get ());
++	      strncpy (sop->so_name, name_buf.get (), SO_NAME_MAX_PATH_SIZE - 1);
++	      sop->so_name[SO_NAME_MAX_PATH_SIZE - 1] = '\0';
++	      strcpy (sop->so_original_name, sop->so_name);
++	    }
++	  sop->lm_info = lm_buf.release ();
++	  *sos_next_ptr = sop;
++	  sos_next_ptr = &sop->next;
++	}
++      else
++	/* Main executable.  */
++	info->main_lm_addr = lm_addr;
++
++      /* Read next entry.  */
++      lm_addr = lm_addr_next;
++    }
++
++  return sos_head;
++}
++
++static void
++fdpic_solib_create_inferior_hook (int from_tty)
++{
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"%s\n : from_tty = %d\n", __FUNCTION__, from_tty);
++
++  /* Relocate main executable.  */
++  fdpic_relocate_main_executable ();
++
++  /* Enable shared library breakpoints.  */
++  if (!enable_break ())
++    {
++      warning (_("shared library handler failed to enable breakpoint"));
++      return;
++    }
++}
++
++static void
++fdpic_clear_solib (void)
++{
++  struct fdpic_info *info = get_fdpic_info ();
++
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog, "%s\n", __FUNCTION__);
++
++  info->lm_base_cache = 0;
++  info->main_lm_addr = 0;
++  info->is_static_binary = 0;
++
++  delete info->main_executable_lm_info;
++  info->main_executable_lm_info = NULL;
++}
++
++static void
++fdpic_free_so (struct so_list *so)
++{
++  lm_info_fdpic *li = (lm_info_fdpic *) so->lm_info;
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog,
++			"%s : so = %s\n", __FUNCTION__,
++			hex_string_custom ((long)so, 16));
++
++  delete li;
++}
++
++static void
++fdpic_relocate_section_addresses (struct so_list *so,
++				  struct target_section *sec)
++{
++  int seg;
++  lm_info_fdpic *li = (lm_info_fdpic *) so->lm_info;
++  struct int_elf32_fdpic_loadmap *map = li->map;
++
++  if (solib_fdpic_debug > 1)
++    fprintf_unfiltered (gdb_stdlog,
++			"%s : so = %s / sec = %s\n", __FUNCTION__,
++			hex_string_custom ((long)so, 16),
++			hex_string_custom ((long)sec, 16));
++
++  for (seg = 0; seg < map->nsegs; seg++)
++    {
++      if (map->segs[seg].p_vaddr <= sec->addr
++	  && sec->addr < map->segs[seg].p_vaddr + map->segs[seg].p_memsz)
++	{
++	  CORE_ADDR displ = map->segs[seg].addr - map->segs[seg].p_vaddr;
++
++	  sec->addr += displ;
++	  sec->endaddr += displ;
++	  break;
++	}
++    }
++}
++
++/* Given an objfile, return the address of its link map.  This value is
++   needed for TLS support.  */
++CORE_ADDR
++fdpic_fetch_objfile_link_map (struct objfile *objfile)
++{
++  struct fdpic_info *info = get_fdpic_info ();
++
++  /* Cause fdpic_current_sos() to be run if it hasn't been already.  */
++  if (info->main_lm_addr == 0)
++    solib_add (0, 0, 1);
++
++  /* fdpic_current_sos() will set main_lm_addr for the main executable.  */
++  if (objfile == current_program_space->symfile_object_file)
++    return info->main_lm_addr;
++
++  /* The other link map addresses may be found by examining the list
++     of shared libraries.  */
++  for (struct so_list *so : current_program_space->solibs ())
++    {
++      lm_info_fdpic *li = (lm_info_fdpic *) so->lm_info;
++
++      if (so->objfile == objfile)
++	return li->lm_addr;
++    }
++
++  /* Not found!  */
++  return 0;
++}
++
++struct target_so_ops fdpic_so_ops;
++
++void _initialize_fdpic_solib ();
++void
++_initialize_fdpic_solib ()
++{
++  fdpic_so_ops.relocate_section_addresses = fdpic_relocate_section_addresses;
++  fdpic_so_ops.free_so = fdpic_free_so;
++  fdpic_so_ops.clear_solib = fdpic_clear_solib;
++  fdpic_so_ops.solib_create_inferior_hook = fdpic_solib_create_inferior_hook;
++  fdpic_so_ops.current_sos = fdpic_current_sos;
++  fdpic_so_ops.open_symbol_file_object = fdpic_open_symbol_file_object;
++  fdpic_so_ops.in_dynsym_resolve_code = fdpic_in_dynsym_resolve_code;
++  fdpic_so_ops.bfd_open = solib_bfd_open;
++
++  /* Debug this file's internals.  */
++  add_setshow_zuinteger_cmd ("solib-fdpic", class_maintenance,
++			     &solib_fdpic_debug, _("\
++Set internal debugging of shared library code for FDPIC."), _("\
++Show internal debugging of shared library code for FDPIC."), _("\
++When non-zero, FDPIC solib specific internal debugging is enabled."),
++			     NULL,
++			     NULL,
++			     &setdebuglist, &showdebuglist);
++}
+diff --git a/include/elf/arm.h b/include/elf/arm.h
+index 5b6e403dd28..f3987cbb00d 100644
+--- a/include/elf/arm.h
++++ b/include/elf/arm.h
+@@ -36,6 +36,7 @@
+ #define EF_ARM_SOFT_FLOAT  0x200
+ #define EF_ARM_VFP_FLOAT   0x400
+ #define EF_ARM_MAVERICK_FLOAT 0x800
++#define EF_ARM_FDPIC       0x1000
+ 
+ /* Frame unwind information */
+ #define PT_ARM_EXIDX (PT_LOPROC + 1)
+-- 
+2.42.0
+

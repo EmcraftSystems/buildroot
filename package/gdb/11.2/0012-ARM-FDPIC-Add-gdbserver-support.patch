@@ -1,0 +1,110 @@
+From 8b806ed538fd8c1dd0bfad203e394accf0419a8e Mon Sep 17 00:00:00 2001
+From: Christophe Lyon <christophe.lyon@linaro.org>
+Date: Wed, 14 Apr 2021 14:22:25 +0000
+Subject: [PATCH 2/7] ARM/FDPIC: Add gdbserver support
+
+This patch extends the existing support for FDPIC on bfin/frv/sh to arm.
+It is enabled when configuring with --host arm-none-uclinuxfdpiceabi,
+using arm-none-uclinuxfdpiceabi-gcc.
+
+Co-authored-by: Mickael Guene <mickael.guene@st.com>
+Co-authored-by: Christophe Lyon <christophe.lyon@st.com>
+Co-authored-by: Ben Wolsieffer <ben.wolsieffer@hefring.com>
+
+	* gdb/nat/linux-ptrace.h: Define PTRACE for FDPIC for arm too.
+	* gdbserver/configure.srv: Accept arm*-*-*linux* to support
+	  the -uclinuxfdpiceabi suffix.
+	* gdbserver/linux-low.c (elf32_fdpic_loadseg): New.
+	(elf32_fdpic_loadmap): New.
+	(linux_process_target::read_offsets): Add support for arm FDPIC.
+---
+ gdb/nat/linux-ptrace.h  |  2 +-
+ gdbserver/configure.srv |  2 +-
+ gdbserver/linux-low.cc  | 38 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 40 insertions(+), 2 deletions(-)
+
+diff --git a/gdb/nat/linux-ptrace.h b/gdb/nat/linux-ptrace.h
+index 2ac59a7317f..304a2dd5849 100644
+--- a/gdb/nat/linux-ptrace.h
++++ b/gdb/nat/linux-ptrace.h
+@@ -83,7 +83,7 @@ struct buffer;
+ #define PTRACE_O_EXITKILL	0x00100000
+ #endif
+ 
+-#if (defined __bfin__ || defined __frv__ || defined __sh__) \
++#if (defined __bfin__ || defined __frv__ || defined __sh__ || defined __arm__) \
+     && !defined PTRACE_GETFDPIC
+ #define PTRACE_GETFDPIC		31
+ #define PTRACE_GETFDPIC_EXEC	0
+diff --git a/gdbserver/configure.srv b/gdbserver/configure.srv
+index 971f537bffa..d1e08a97d0f 100644
+--- a/gdbserver/configure.srv
++++ b/gdbserver/configure.srv
+@@ -75,7 +75,7 @@ case "${gdbserver_host}" in
+ 			srv_linux_usrregs=yes
+ 			srv_linux_thread_db=yes
+ 			;;
+-  arm*-*-linux*)	srv_tgtobj="$srv_linux_obj linux-arm-low.o"
++  arm*-*-*linux*)	srv_tgtobj="$srv_linux_obj linux-arm-low.o"
+ 			srv_tgtobj="$srv_tgtobj linux-arm-tdesc.o"
+ 			srv_tgtobj="$srv_tgtobj linux-aarch32-low.o"
+ 			srv_tgtobj="$srv_tgtobj linux-aarch32-tdesc.o"
+diff --git a/gdbserver/linux-low.cc b/gdbserver/linux-low.cc
+index 7244211c25c..77beb1583b8 100644
+--- a/gdbserver/linux-low.cc
++++ b/gdbserver/linux-low.cc
+@@ -100,6 +100,30 @@
+ # include "gdbsupport/btrace-common.h"
+ #endif
+ 
++/* ARM FDPIC support.  */
++#if defined(__FDPIC__)
++/* This data structure represents a PT_LOAD segment.  */
++struct elf32_fdpic_loadseg
++{
++  /* Core address at which the segment is mapped.  */
++  Elf32_Addr addr;
++  /* VMA recorded in the program header.  */
++  Elf32_Addr p_vaddr;
++  /* Size of this segment in memory.  */
++  Elf32_Word p_memsz;
++};
++
++struct elf32_fdpic_loadmap
++{
++  /* Protocol version number, must be zero.  */
++  Elf32_Half version;
++  /* Number of segments in this map.  */
++  Elf32_Half nsegs;
++  /* The actual memory map.  */
++  struct elf32_fdpic_loadseg segs[/*nsegs*/];
++};
++#endif
++
+ #ifndef HAVE_ELF32_AUXV_T
+ /* Copied from glibc's elf.h.  */
+ typedef struct
+@@ -5918,6 +5942,20 @@ linux_process_target::read_offsets (CORE_ADDR *text_p, CORE_ADDR *data_p)
+       *text_p = text;
+       *data_p = data - (text_end - text);
+ 
++      return 1;
++    }
++  return 0;
++#elif defined(__FDPIC__)
++  long ret;
++  struct elf32_fdpic_loadmap *loadmap;
++  int pid = lwpid_of (get_thread_lwp (current_inferior));
++
++  ret = ptrace (PTRACE_GETFDPIC, pid, PTRACE_GETFDPIC_EXEC, &loadmap);
++  if (ret == 0)
++    {
++      *text_p = (CORE_ADDR) (loadmap->segs[0].addr - loadmap->segs[0].p_vaddr);
++      *data_p = (CORE_ADDR) (loadmap->segs[1].addr - loadmap->segs[1].p_vaddr);
++
+       return 1;
+     }
+   return 0;
+-- 
+2.42.0
+

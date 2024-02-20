@@ -1,0 +1,94 @@
+From 1cb8ce81dcaed16900fd6970ed153fe9482180ac Mon Sep 17 00:00:00 2001
+From: Christophe Lyon <christophe.lyon@linaro.org>
+Date: Wed, 14 Apr 2021 14:22:34 +0000
+Subject: [PATCH 4/7] ARM/FDPIC: Add support for GDB call command
+
+Co-authored-by: Mickael Guene  <mickael.guene@st.com
+Co-authored-by: Christophe Lyon  <christophe.lyon@st.com>
+Co-authored-by: Ben Wolsieffer <ben.wolsieffer@hefring.com>
+
+	* gdb/arm-tdep.c (arm_push_dummy_call): Handle FDPIC case.
+	* gdb/arm-tdep.h (arm_fdpic_find_global_pointer): Declare.
+	* gdb/solib-fdpic.c (arm_fdpic_find_global_pointer): New.
+---
+ gdb/arm-tdep.c    |  9 +++++++++
+ gdb/arm-tdep.h    |  1 +
+ gdb/solib-fdpic.c | 24 ++++++++++++++++++++++++
+ 3 files changed, 34 insertions(+)
+
+diff --git a/gdb/arm-tdep.c b/gdb/arm-tdep.c
+index 11a2c7481f3..580b503f51c 100644
+--- a/gdb/arm-tdep.c
++++ b/gdb/arm-tdep.c
+@@ -46,6 +46,7 @@
+ #include "user-regs.h"
+ #include "observable.h"
+ #include "count-one-bits.h"
++#include "infcall.h"
+ 
+ #include "arch/arm.h"
+ #include "arch/arm-get-next-pcs.h"
+@@ -3982,6 +3983,14 @@ arm_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
+       si = pop_stack_item (si);
+     }
+ 
++  if (gdbarch_tdep (gdbarch)->is_fdpic)
++  {
++    CORE_ADDR func_addr = find_function_addr (function, NULL);
++
++    regcache_cooked_write_unsigned (regcache, 9,
++				    arm_fdpic_find_global_pointer (func_addr));
++  }
++
+   /* Finally, update teh SP register.  */
+   regcache_cooked_write_unsigned (regcache, ARM_SP_REGNUM, sp);
+ 
+diff --git a/gdb/arm-tdep.h b/gdb/arm-tdep.h
+index 6d07e35cd3d..b44bce698df 100644
+--- a/gdb/arm-tdep.h
++++ b/gdb/arm-tdep.h
+@@ -298,5 +298,6 @@ const target_desc *arm_read_mprofile_description (arm_m_profile_type m_type);
+ /* FDPIC structure and api.  */
+ extern struct target_so_ops fdpic_so_ops;
+ extern CORE_ADDR fdpic_fetch_objfile_link_map (struct objfile *objfile);
++extern CORE_ADDR arm_fdpic_find_global_pointer (CORE_ADDR addr);
+ 
+ #endif /* arm-tdep.h */
+diff --git a/gdb/solib-fdpic.c b/gdb/solib-fdpic.c
+index b53da6a1295..6e1550627b7 100644
+--- a/gdb/solib-fdpic.c
++++ b/gdb/solib-fdpic.c
+@@ -691,6 +691,30 @@ enable_break (void)
+   return 0;
+ }
+ 
++/* Exported functions.  */
++/* Find the global pointer for the given function address ADDR.  */
++CORE_ADDR
++arm_fdpic_find_global_pointer (CORE_ADDR addr)
++{
++  for (struct so_list *so : current_program_space->solibs ())
++    {
++      int seg;
++      lm_info_fdpic *li = (lm_info_fdpic *) so->lm_info;
++      int_elf32_fdpic_loadmap *map = li->map;
++
++      for (seg = 0; seg < map->nsegs; seg++)
++	{
++	  if (map->segs[seg].addr <= addr
++	      && addr < map->segs[seg].addr + map->segs[seg].p_memsz)
++	    return li->got_value;
++	}
++    }
++
++  /* Didn't find it in any of the shared objects.  So assume it's in the
++     main executable.  */
++  return main_got ();
++}
++
+ /* Shared object operations.  */
+ static int
+ fdpic_in_dynsym_resolve_code (CORE_ADDR pc)
+-- 
+2.42.0
+

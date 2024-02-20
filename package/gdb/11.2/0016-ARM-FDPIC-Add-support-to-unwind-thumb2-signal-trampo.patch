@@ -1,0 +1,65 @@
+From 4d1a4b1ecc7832cb8b18b3397b1d6b4c507dc0ff Mon Sep 17 00:00:00 2001
+From: Christophe Lyon <christophe.lyon@linaro.org>
+Date: Wed, 14 Apr 2021 14:22:44 +0000
+Subject: [PATCH 6/7] ARM/FDPIC: Add support to unwind thumb2 signal trampoline
+
+Co-authored-by: Mickael Guene  <mickael.guene@st.com>
+Co-authored-by: Christophe Lyon  <christophe.lyon@st.com>
+Co-authored-by: Ben Wolsieffer <ben.wolsieffer@hefring.com>
+
+	* gdb/arm-linux-tdep.c (FDPIC_T2_LDR_R12_WITH_FUNCDESC): New
+	define.
+	(FDPIC_T2_LDR_R9_WITH_GOT): New define.
+	(FDPIC_T2_LDR_PC_WITH_RESTORER): New define.
+	(thumb2_fdpic_linux_sigreturn_tramp_frame): New.
+	(arm_linux_init_abi): Add thumb2 signal handler.
+---
+ gdb/arm-linux-tdep.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/gdb/arm-linux-tdep.c b/gdb/arm-linux-tdep.c
+index a1aaef73d88..be103986c71 100644
+--- a/gdb/arm-linux-tdep.c
++++ b/gdb/arm-linux-tdep.c
+@@ -266,6 +266,10 @@ static const gdb_byte arm_linux_thumb2_le_breakpoint[] = { 0xf0, 0xf7, 0x00, 0xa
+ #define FDPIC_LDR_R9_WITH_GOT		0xe59c9004
+ #define FDPIC_LDR_PC_WITH_RESTORER	0xe59cf000
+ 
++#define FDPIC_T2_LDR_R12_WITH_FUNCDESC  0xc008f8df
++#define FDPIC_T2_LDR_R9_WITH_GOT	0x9004f8dc
++#define FDPIC_T2_LDR_PC_WITH_RESTORER   0xf000f8dc
++
+ /* Syscall number for sigreturn.  */
+ #define ARM_SIGRETURN 119
+ /* Syscall number for rt_sigreturn.  */
+@@ -494,6 +498,18 @@ static struct tramp_frame arm_fdpic_linux_sigreturn_tramp_frame = {
+   arm_linux_sigreturn_fdpic_init
+ };
+ 
++static struct tramp_frame thumb2_fdpic_linux_sigreturn_tramp_frame = {
++  SIGTRAMP_FRAME,
++  4,
++  {
++    { FDPIC_T2_LDR_R12_WITH_FUNCDESC, ULONGEST_MAX },
++    { FDPIC_T2_LDR_R9_WITH_GOT, ULONGEST_MAX },
++    { FDPIC_T2_LDR_PC_WITH_RESTORER, ULONGEST_MAX },
++    { TRAMP_SENTINEL_INSN }
++  },
++  arm_linux_sigreturn_fdpic_init
++};
++
+ static struct tramp_frame arm_linux_restart_syscall_tramp_frame = {
+   NORMAL_FRAME,
+   4,
+@@ -1843,6 +1859,8 @@ arm_linux_init_abi (struct gdbarch_info info,
+ 				&thumb2_eabi_linux_rt_sigreturn_tramp_frame);
+   tramp_frame_prepend_unwinder (gdbarch,
+ 				&arm_fdpic_linux_sigreturn_tramp_frame);
++  tramp_frame_prepend_unwinder (gdbarch,
++				&thumb2_fdpic_linux_sigreturn_tramp_frame);
+   tramp_frame_prepend_unwinder (gdbarch,
+ 				&arm_linux_restart_syscall_tramp_frame);
+   tramp_frame_prepend_unwinder (gdbarch,
+-- 
+2.42.0
+

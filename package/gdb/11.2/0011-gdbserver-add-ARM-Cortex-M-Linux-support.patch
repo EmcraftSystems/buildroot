@@ -1,0 +1,153 @@
+From f2f952d17da57dc0f454541f46dca8eff31b26d5 Mon Sep 17 00:00:00 2001
+From: Ben Wolsieffer <Ben.Wolsieffer@hefring.com>
+Date: Fri, 29 Jul 2022 12:19:20 -0400
+Subject: [PATCH 1/7] gdbserver: add ARM Cortex-M Linux support
+
+Add support for running gdbserver on ARM Cortex-M (no-MMU) Linux
+platforms. These platforms are detected at runtime using the
+utsname.machine field.  Additionally, this patch enables correct parsing
+of the xPSR register (instead of CPSR) to determine the Thumb mode
+state.
+---
+ gdbserver/linux-aarch32-low.cc | 16 ++++++++------
+ gdbserver/linux-arm-low.cc     |  9 +++++++-
+ gdbserver/linux-arm-tdesc.cc   | 38 ++++++++++++++++++++++++++++++++++
+ gdbserver/linux-arm-tdesc.h    |  8 +++++++
+ 4 files changed, 64 insertions(+), 7 deletions(-)
+
+diff --git a/gdbserver/linux-aarch32-low.cc b/gdbserver/linux-aarch32-low.cc
+index 2285f7007bc..88b07f498bf 100644
+--- a/gdbserver/linux-aarch32-low.cc
++++ b/gdbserver/linux-aarch32-low.cc
+@@ -20,6 +20,7 @@
+ #include "arch/arm-linux.h"
+ #include "linux-low.h"
+ #include "linux-aarch32-low.h"
++#include "linux-arm-tdesc.h"
+ 
+ #include <sys/ptrace.h>
+ /* Don't include elf.h if linux/elf.h got included by gdb_proc_service.h.
+@@ -172,14 +173,17 @@ int
+ arm_is_thumb_mode (void)
+ {
+   struct regcache *regcache = get_thread_regcache (current_thread, 1);
+-  unsigned long cpsr;
++  ULONGEST cpsr = regcache_raw_get_unsigned (regcache, ARM_PS_REGNUM);
+ 
+-  collect_register_by_name (regcache, "cpsr", &cpsr);
+-
+-  if (cpsr & 0x20)
++  if (arm_linux_is_mprofile_description (regcache->tdesc))
++    {
++      if (cpsr & 0x01000000)
++	return 1;
++    }
++  else if (cpsr & 0x20)
+     return 1;
+-  else
+-    return 0;
++
++  return 0;
+ }
+ 
+ /* Returns 1 if there is a software breakpoint at location.  */
+diff --git a/gdbserver/linux-arm-low.cc b/gdbserver/linux-arm-low.cc
+index ab6209a3abc..fd04269fc11 100644
+--- a/gdbserver/linux-arm-low.cc
++++ b/gdbserver/linux-arm-low.cc
+@@ -34,6 +34,7 @@
+ #include "nat/gdb_ptrace.h"
+ #include <signal.h>
+ #include <sys/syscall.h>
++#include <sys/utsname.h>
+ 
+ #ifndef PTRACE_GET_THREAD_AREA
+ #define PTRACE_GET_THREAD_AREA 22
+@@ -958,7 +959,13 @@ get_next_pcs_syscall_next_pc (struct arm_get_next_pcs *self)
+ static const struct target_desc *
+ arm_read_description (void)
+ {
+-  unsigned long arm_hwcap = linux_get_hwcap (4);
++  struct utsname un;
++  unsigned long arm_hwcap;
++
++  if (uname(&un) == 0 && strcmp(un.machine, "armv7ml") == 0)
++    return arm_linux_read_mprofile_description(ARM_M_TYPE_M_PROFILE);
++
++  arm_hwcap = linux_get_hwcap (4);
+ 
+   if (arm_hwcap & HWCAP_IWMMXT)
+     return arm_linux_read_description (ARM_FP_TYPE_IWMMXT);
+diff --git a/gdbserver/linux-arm-tdesc.cc b/gdbserver/linux-arm-tdesc.cc
+index 293e108a9cc..e42a50624e3 100644
+--- a/gdbserver/linux-arm-tdesc.cc
++++ b/gdbserver/linux-arm-tdesc.cc
+@@ -26,6 +26,9 @@
+ /* All possible Arm target descriptors.  */
+ static struct target_desc *tdesc_arm_list[ARM_FP_TYPE_INVALID];
+ 
++/* All possible Arm M-profile target descriptors.  */
++static struct target_desc *tdesc_arm_mprofile_list[ARM_M_TYPE_INVALID];
++
+ /* See linux-arm-tdesc.h.  */
+ 
+ const target_desc *
+@@ -63,3 +66,38 @@ arm_linux_get_tdesc_fp_type (const target_desc *tdesc)
+ 
+   return ARM_FP_TYPE_INVALID;
+ }
++
++/* See linux-arm-tdesc.h.  */
++
++const target_desc *
++arm_linux_read_mprofile_description (arm_m_profile_type m_type)
++{
++  struct target_desc *tdesc = tdesc_arm_mprofile_list[m_type];
++
++  if (tdesc == nullptr)
++    {
++      tdesc = arm_create_mprofile_target_description (m_type);
++
++      static const char *expedite_regs[] = { "r11", "sp", "pc", 0 };
++      init_target_desc (tdesc, expedite_regs);
++
++      tdesc_arm_mprofile_list[m_type] = tdesc;
++    }
++
++  return tdesc;
++}
++
++/* See linux-arm-tdesc.h.  */
++
++bool
++arm_linux_is_mprofile_description (const target_desc *tdesc)
++{
++  gdb_assert (tdesc != nullptr);
++  for (int i = ARM_M_TYPE_M_PROFILE; i < ARM_M_TYPE_INVALID; i++)
++    {
++      if (tdesc == tdesc_arm_mprofile_list[i])
++	return true;
++    }
++
++  return false;
++}
+diff --git a/gdbserver/linux-arm-tdesc.h b/gdbserver/linux-arm-tdesc.h
+index 1de1b2ecc58..9265a3d1b23 100644
+--- a/gdbserver/linux-arm-tdesc.h
++++ b/gdbserver/linux-arm-tdesc.h
+@@ -28,4 +28,12 @@ const target_desc * arm_linux_read_description (arm_fp_type fp_type);
+ 
+ arm_fp_type arm_linux_get_tdesc_fp_type (const target_desc *tdesc);
+ 
++/* Return the Arm M-profile target description with type M_TYPE.  */
++
++const target_desc * arm_linux_read_mprofile_description (arm_m_profile_type m_type);
++
++/* Return true if TDESC is an Arm M-profile target description.  */
++
++bool arm_linux_is_mprofile_description (const target_desc *tdesc);
++
+ #endif /* linux-arm-tdesc.h.  */
+-- 
+2.42.0
+

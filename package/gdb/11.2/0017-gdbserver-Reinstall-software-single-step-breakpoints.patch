@@ -1,0 +1,382 @@
+From 7b8f5c5622acb86b6c984dfbf50cbd94c222223c Mon Sep 17 00:00:00 2001
+From: Kevin Buettner <kevinb@redhat.com>
+Date: Tue, 1 Aug 2023 13:33:24 -0700
+Subject: [PATCH 7/7] gdbserver: Reinstall software single-step breakpoints in
+ resume_stopped_resumed_lwps
+
+At the moment, while performing a software single-step, gdbserver fails
+to reinsert software single-step breakpoints for a LWP when
+interrupted by a signal in another thread.  This commit fixes this
+problem by reinstalling software single-step breakpoints in
+linux_process_target::resume_stopped_resumed_lwps in
+gdbserver/linux-low.cc.
+
+This bug was discovered due to a failing assert in maybe_hw_step()
+in gdbserver/linux-low.cc.  Looking at the backtrace revealed
+that the caller was linux_process_target::resume_stopped_resumed_lwps.
+I was uncertain whether the assert should still be valid when called
+from that method, so I tried hoisting the assert from maybe_hw_step
+to all callers except resume_stopped_resumed_lwps.  But running the
+new test case, described below, showed that merely eliminating the
+assert for this case was NOT a good fix - a study of the log file for
+the test showed that the single-step operation failed to occur.
+Instead GDB (via gdbserver) stopped at the next breakpoint that was
+hit.
+
+Zhiyong Yan had proposed a fix which resinserted software single-step
+breakpoints, albeit at a different location in linux-low.cc.  Testing
+revealed that, while running gdb.threads/pending-fork-event-detach,
+the executable associated with that test would die due to a SIGTRAP
+after the test program was detached.  Examination of the core file(s)
+showed that a breakpoint instruction had been left in program memory.
+Test results were otherwise very good, so Zhiyong was definitely on
+the right track!
+
+This commit causes software single-step breakpoint(s) to be inserted
+before the call to maybe_hw_step in resume_stopped_resumed_lwps.  This
+will cause 'has_single_step_breakpoints (thread)' to be true, so that
+the assert in maybe_hw_step...
+
+      /* GDBserver must insert single-step breakpoint for software
+	 single step.  */
+      gdb_assert (has_single_step_breakpoints (thread));
+
+...will no longer fail.  And better still, the single-step breakpoints
+are reinstalled, so that stepping will actually work, even when
+interrupted.
+
+The C code for the test case was loosely adapted from the reproducer
+provided in Zhiyong's bug report for this problem.  The .exp file was
+copied from next-fork-other-thread.exp and then tweaked slightly.  As
+noted in a comment in next-fork-exec-other-thread.exp, I had to remove
+"on" from the loop for non-stop as it was failing on all architectures
+(including x86-64) that I tested.  I have a feeling that it ought to
+work, but this can be investigated separately and (re)enabled once it
+works.  I also increased the number of iterations for the loop running
+the "next" commands.  I've had some test runs which don't show the bug
+until the loop counter exceeded 100 iterations.  The C file for the
+new test uses shorter delays than next-fork-other-thread.c though, so
+it doesn't take overly long (IMO) to run this new test.
+
+Running the new test on a Raspberry Pi w/ a 32-bit (Arm) kernel and
+userland using a gdbserver build without the fix in this commit shows
+the following results:
+
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=fork: target-non-stop=auto: non-stop=off: displaced-stepping=auto: i=12: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=fork: target-non-stop=auto: non-stop=off: displaced-stepping=on: i=9: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=fork: target-non-stop=auto: non-stop=off: displaced-stepping=off: i=18: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=fork: target-non-stop=off: non-stop=off: displaced-stepping=auto: i=3: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=fork: target-non-stop=off: non-stop=off: displaced-stepping=on: i=11: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=fork: target-non-stop=off: non-stop=off: displaced-stepping=off: i=1: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=auto: non-stop=off: displaced-stepping=auto: i=1: next to break here
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=auto: non-stop=off: displaced-stepping=on: i=3: next to break here
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=auto: non-stop=off: displaced-stepping=off: i=1: next to break here
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=on: non-stop=off: displaced-stepping=auto: i=47: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=on: non-stop=off: displaced-stepping=on: i=57: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=off: non-stop=off: displaced-stepping=auto: i=1: next to break here
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=off: non-stop=off: displaced-stepping=on: i=10: next to break here
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=off: non-stop=off: displaced-stepping=off: i=1: next to break here
+
+		=== gdb Summary ===
+
+ # of unexpected core files	12
+ # of expected passes		3011
+ # of unexpected failures	14
+
+Each of the 12 core files were caused by the failed assertion in
+maybe_hw_step in linux-low.c.  These correspond to 12 of the
+unexpected failures.
+
+When the tests are run using a gdbserver build which includes the fix
+in this commit, the results are significantly better, but not perfect:
+
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=on: non-stop=off: displaced-stepping=auto: i=143: next to other line
+FAIL: gdb.threads/next-fork-exec-other-thread.exp: fork_func=vfork: target-non-stop=on: non-stop=off: displaced-stepping=on: i=25: next to other line
+
+		=== gdb Summary ===
+
+ # of expected passes		10178
+ # of unexpected failures	2
+
+I think that the two remaining failures are due to some different
+problem.  They are also racy - I've seen runs with no failures or only
+one failure, but never more than two.  Also, those runs were conducted
+with the loop count in next-fork-exec-other-thread.exp set to 200.
+During his testing of this fix and the new test case, Luis Machado
+found that this test was taking a long time and asked about ways to
+speed it up.  I then conducted additional tests in which I gradually
+reduced the loop count, timing each one, also noting the number of
+failures.  With the loop count set to 30, I found that I could still
+reliably reproduce the failures that Zhiyong reported (in which, with
+the proper settings, core files are created).  But, with the loop
+count set to 30, the other failures noted above were much less likely
+to show up.  Anyone wishing to investigate those other failures should
+set the loop count back up to 200.
+
+Running the new test on x86-64 and aarch64, both native and
+native-gdbserver shows no failures.
+
+Also, I see no regressions when running the entire test suite for
+armv7l-unknown-linux-gnueabihf (i.e.  the Raspberry Pi w/ 32-bit
+kernel+userland) with --target_board=native-gdbserver.  Additionally,
+using --target_board=native-gdbserver, I also see no regressions for
+the entire test suite for x86-64 and aarch64 running Fedora 38.
+
+Bug: https://sourceware.org/bugzilla/show_bug.cgi?id=30387
+Co-Authored-By: Zhiyong Yan <zhiyong.yan@windriver.com>
+Tested-By: Zhiyong Yan <zhiyong.yan@windriver.com>
+Tested-By: Luis Machado <luis.machado@arm.com>
+---
+ .../gdb.threads/next-fork-exec-other-thread.c |  82 +++++++++++
+ .../next-fork-exec-other-thread.exp           | 131 ++++++++++++++++++
+ gdbserver/linux-low.cc                        |   7 +-
+ 3 files changed, 219 insertions(+), 1 deletion(-)
+ create mode 100644 gdb/testsuite/gdb.threads/next-fork-exec-other-thread.c
+ create mode 100644 gdb/testsuite/gdb.threads/next-fork-exec-other-thread.exp
+
+diff --git a/gdb/testsuite/gdb.threads/next-fork-exec-other-thread.c b/gdb/testsuite/gdb.threads/next-fork-exec-other-thread.c
+new file mode 100644
+index 00000000000..884706c6c3c
+--- /dev/null
++++ b/gdb/testsuite/gdb.threads/next-fork-exec-other-thread.c
+@@ -0,0 +1,82 @@
++/* This testcase is part of GDB, the GNU debugger.
++
++   Copyright 2023 Free Software Foundation, Inc.
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; either version 3 of the License, or
++   (at your option) any later version.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <fcntl.h>
++#include <errno.h>
++#include <unistd.h>
++#include <pthread.h>
++#include <sys/wait.h>
++
++#define MAX_LOOP_ITER 10000
++
++static char *argv0;
++
++static void*
++worker_a (void *pArg)
++{
++  int iter = 0;
++  char *args[] = {argv0, "self-call", NULL };
++
++  while (iter++ < MAX_LOOP_ITER)
++    {
++      pid_t pid = FORK_FUNC ();
++      if (pid == 0)
++	{
++	  /* child */
++	  if (execvp (args[0], args) == -1)
++	    {
++	      fprintf (stderr, "execvp error: %d\n", errno);
++	      exit (1);
++	    }
++	}
++
++      waitpid (pid, NULL, 0);
++      usleep (5);
++    }
++}
++
++static void*
++worker_b (void *pArg)
++{
++  int iter = 0;
++  while (iter++ < MAX_LOOP_ITER)  /* for loop */
++    {
++      usleep (5);  /* break here */
++      usleep (5);  /* other line */
++    }
++}
++
++int
++main (int argc, char **argv)
++{
++  pthread_t wa_pid;
++  pthread_t wb_pid;
++
++  argv0 = argv[0];
++
++  if (argc > 1 && strcmp (argv[1], "self-call") == 0)
++    exit (0);
++
++  pthread_create (&wa_pid, NULL, worker_a, NULL);
++  pthread_create (&wb_pid, NULL, worker_b, NULL);
++  pthread_join (wa_pid, NULL);
++
++  exit (0);
++}
+diff --git a/gdb/testsuite/gdb.threads/next-fork-exec-other-thread.exp b/gdb/testsuite/gdb.threads/next-fork-exec-other-thread.exp
+new file mode 100644
+index 00000000000..5e0ac5b78df
+--- /dev/null
++++ b/gdb/testsuite/gdb.threads/next-fork-exec-other-thread.exp
+@@ -0,0 +1,131 @@
++# Copyright 2022-2023 Free Software Foundation, Inc.
++
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# This test was adapted from next-fork-other-thread.exp. The .c file
++# was adapted from the reproducer for this bug:
++#
++# https://sourceware.org/bugzilla/show_bug.cgi?id=30387#
++#
++# That bug demonstrates a problem with software-singlestep in gdbserver.
++# Prior to being fixed, this test also demonstrated that bug for a
++# 32-bit ARM target.  (Use RUNTESTFLAGS="--target_board=native-gdbserver".)
++# It has been reproduced on a Raspberry Pi running Ubunutu server
++# 20.04.5 LTS with 32-bit kernel + 32-bit userland.  It was NOT reproducible
++# using a circa 2023 Raspberry Pi OS w/ 64-bit kernel and 32-bit userland.
++
++standard_testfile
++
++# Line where to stop the main thread.
++set break_here_line [gdb_get_line_number "break here"]
++
++# Build executables, one for each fork flavor.
++foreach_with_prefix fork_func {fork vfork} {
++    set opts [list debug pthreads additional_flags=-DFORK_FUNC=${fork_func}]
++    if { [build_executable "failed to prepare" \
++	    ${testfile}-${fork_func} ${srcfile} $opts] } {
++	return
++    }
++}
++
++# If testing against GDBserver, consume all it its output.
++
++proc drain_gdbserver_output { } {
++    if { [info exists ::server_spawn_id] } {
++	gdb_test_multiple "" "" {
++	    -i "$::server_spawn_id"
++	    -timeout 0
++	    -re ".+" {
++	      exp_continue
++	    }
++	}
++    }
++}
++
++# Run the test with the given parameters:
++#
++#   - FORK_FUNC: fork flavor, "fork" or "vfork".
++#   - TARGET-NON-STOP: "maintenance set target-non-stop" value, "auto", "on" or
++#     "off".
++#   - NON-STOP: "set non-stop" value, "on" or "off".
++#   - DISPLACED-STEPPING: "set displaced-stepping" value, "auto", "on" or "off".
++
++proc do_test { fork_func target-non-stop non-stop displaced-stepping } {
++    save_vars { ::GDBFLAGS } {
++	append ::GDBFLAGS " -ex \"maintenance set target-non-stop ${target-non-stop}\""
++	append ::GDBFLAGS " -ex \"set non-stop ${non-stop}\""
++	clean_restart ${::binfile}-${fork_func}
++    }
++
++    gdb_test_no_output "set displaced-stepping ${displaced-stepping}"
++
++    if { ![runto_main] } {
++	return
++    }
++
++    # The "Detached after (v)fork" messages get in the way in non-stop, disable
++    # them.
++    gdb_test_no_output "set print inferior-events off"
++
++    # Advance the next-ing thread to the point where we'll execute the nexts.
++    # Leave the breakpoint in: it will force GDB to step over it while next-ing,
++    # which exercises some additional code paths.
++    gdb_test "break $::break_here_line" "Breakpoint $::decimal at $::hex.*"
++    gdb_test "continue" "hit Breakpoint $::decimal, worker_b.*"
++
++    # Next an arbitrary number of times over the lines of the loop.
++    for { set i 0 } { $i < 30 } { incr i } {
++	# If testing against GDBserver, the forking threads cause a lot of
++	# "Detaching from process XYZ" messages to appear.  If we don't consume
++	# that output, GDBserver eventually blocks on a full stderr.  Drain it
++	# once every loop.  It may not be needed for 20 iterations, but it's
++	# needed if you increase to 200 iterations.
++	drain_gdbserver_output
++
++	with_test_prefix "i=$i" {
++	    if { [gdb_test "next" "other line.*" "next to other line"] != 0 } {
++		return
++	    }
++
++	    if { [gdb_test "next" "for loop.*" "next to for loop"] != 0 } {
++		return
++	    }
++
++	    if { [gdb_test "next" "break here.*" "next to break here"] != 0} {
++		return
++	    }
++	}
++    }
++}
++
++foreach_with_prefix fork_func {fork vfork} {
++    foreach_with_prefix target-non-stop {auto on off} {
++	# This file was copied from next-fork-other-thread.exp and
++	# then adapted for the a case which also involves an exec in
++	# addition to the fork.  Ideally, we should test non-stop "on"
++	# in addition to "off", but, for this test, that results in a
++	# number of failures occur preceded by the message:
++	#
++	# Cannot execute this command while the selected thread is running.
++	#
++	# That seems like correct behavior to me, but perhaps the
++	# non-stop case can be made to work; if so, simply add "on"
++	# after "off" on the line below...
++	foreach_with_prefix non-stop {off} {
++	    foreach_with_prefix displaced-stepping {auto on off} {
++		do_test ${fork_func} ${target-non-stop} ${non-stop} ${displaced-stepping}
++	    }
++	}
++    }
++}
+diff --git a/gdbserver/linux-low.cc b/gdbserver/linux-low.cc
+index 77beb1583b8..397f2a3ed7e 100644
+--- a/gdbserver/linux-low.cc
++++ b/gdbserver/linux-low.cc
+@@ -2497,7 +2497,12 @@ linux_process_target::resume_stopped_resumed_lwps (thread_info *thread)
+       int step = 0;
+ 
+       if (thread->last_resume_kind == resume_step)
+-	step = maybe_hw_step (thread);
++	{
++	  if (supports_software_single_step ())
++	    install_software_single_step_breakpoints (lp);
++
++	  step = maybe_hw_step (thread);
++	}
+ 
+       if (debug_threads)
+ 	debug_printf ("RSRL: resuming stopped-resumed LWP %s at %s: step=%d\n",
+-- 
+2.42.0
+

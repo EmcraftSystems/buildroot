@@ -1,0 +1,102 @@
+From 7f4c7f2f29ee65f45db7ee859f38cabecbca7896 Mon Sep 17 00:00:00 2001
+From: Christophe Lyon <christophe.lyon@linaro.org>
+Date: Wed, 14 Apr 2021 14:22:38 +0000
+Subject: [PATCH 5/7] ARM/FDPIC: Allow backtrace to cross signal handler
+
+Co-authored-by: Mickael Guene  <mickael.guene@st.com>
+Co-authored-by: Christophe Lyon  <christophe.lyon@st.com>
+Co-authored-by: Ben Wolsieffer <ben.wolsieffer@hefring.com>
+
+	* gdb/arm-linux-tdep.c (THUMB2_SET_R7_RT_SIGRETURN): New define.
+	(FDPIC_LDR_R12_WITH_FUNCDESC): New define.
+	(FDPIC_LDR_R9_WITH_GOT): New define.
+	(FDPIC_LDR_PC_WITH_RESTORER): New define.
+	(arm_linux_sigreturn_fdpic_init): New.
+	(arm_fdpic_linux_sigreturn_tramp_frame): New.
+	(arm_linux_init_abi): Handle signal handler for FDPIC.
+---
+ gdb/arm-linux-tdep.c | 47 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/gdb/arm-linux-tdep.c b/gdb/arm-linux-tdep.c
+index 90771926bb2..a1aaef73d88 100644
+--- a/gdb/arm-linux-tdep.c
++++ b/gdb/arm-linux-tdep.c
+@@ -260,6 +260,12 @@ static const gdb_byte arm_linux_thumb2_le_breakpoint[] = { 0xf0, 0xf7, 0x00, 0xa
+ #define ARM_LDR_PC_SP_12		0xe49df00c
+ #define ARM_LDR_PC_SP_4			0xe49df004
+ 
++/* FDPIC specific definition.  */
++#define THUMB2_SET_R7_RT_SIGRETURN	0x07adf04f
++#define FDPIC_LDR_R12_WITH_FUNCDESC	0xe59fc004
++#define FDPIC_LDR_R9_WITH_GOT		0xe59c9004
++#define FDPIC_LDR_PC_WITH_RESTORER	0xe59cf000
++
+ /* Syscall number for sigreturn.  */
+ #define ARM_SIGRETURN 119
+ /* Syscall number for rt_sigreturn.  */
+@@ -319,6 +325,33 @@ arm_linux_sigreturn_init (const struct tramp_frame *self,
+ 			      ARM_SIGCONTEXT_R0);
+ }
+ 
++static void
++arm_linux_sigreturn_fdpic_init (const struct tramp_frame *self,
++				struct frame_info *this_frame,
++				struct trad_frame_cache *this_cache,
++				CORE_ADDR func)
++{
++  struct gdbarch *gdbarch = get_frame_arch (this_frame);
++  enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
++  CORE_ADDR funcdesc = read_memory_unsigned_integer (func + 12, 4, byte_order);
++  CORE_ADDR handler = read_memory_unsigned_integer (funcdesc, 4, byte_order);
++  unsigned int first_handler_instruction
++    = read_memory_unsigned_integer (handler & ~1, 4, byte_order);
++
++  /* We look for either arm or thumb2 code.  */
++  /* This only works well for libc registered handler.  */
++  if (first_handler_instruction == ARM_SET_R7_RT_SIGRETURN
++      || first_handler_instruction == THUMB2_SET_R7_RT_SIGRETURN)
++    arm_linux_sigtramp_cache (this_frame, this_cache, func,
++			      ARM_NEW_RT_SIGFRAME_UCONTEXT
++			      + ARM_UCONTEXT_SIGCONTEXT
++			      + ARM_SIGCONTEXT_R0);
++  else
++    arm_linux_sigtramp_cache (this_frame, this_cache, func,
++			      ARM_UCONTEXT_SIGCONTEXT
++			      + ARM_SIGCONTEXT_R0);
++}
++
+ static void
+ arm_linux_rt_sigreturn_init (const struct tramp_frame *self,
+ 			  struct frame_info *this_frame,
+@@ -449,6 +482,18 @@ static struct tramp_frame thumb2_eabi_linux_rt_sigreturn_tramp_frame = {
+   arm_linux_rt_sigreturn_init
+ };
+ 
++static struct tramp_frame arm_fdpic_linux_sigreturn_tramp_frame = {
++  SIGTRAMP_FRAME,
++  4,
++  {
++    { FDPIC_LDR_R12_WITH_FUNCDESC, ULONGEST_MAX },
++    { FDPIC_LDR_R9_WITH_GOT, ULONGEST_MAX },
++    { FDPIC_LDR_PC_WITH_RESTORER, ULONGEST_MAX },
++    { TRAMP_SENTINEL_INSN }
++  },
++  arm_linux_sigreturn_fdpic_init
++};
++
+ static struct tramp_frame arm_linux_restart_syscall_tramp_frame = {
+   NORMAL_FRAME,
+   4,
+@@ -1796,6 +1841,8 @@ arm_linux_init_abi (struct gdbarch_info info,
+ 				&thumb2_eabi_linux_sigreturn_tramp_frame);
+   tramp_frame_prepend_unwinder (gdbarch,
+ 				&thumb2_eabi_linux_rt_sigreturn_tramp_frame);
++  tramp_frame_prepend_unwinder (gdbarch,
++				&arm_fdpic_linux_sigreturn_tramp_frame);
+   tramp_frame_prepend_unwinder (gdbarch,
+ 				&arm_linux_restart_syscall_tramp_frame);
+   tramp_frame_prepend_unwinder (gdbarch,
+-- 
+2.42.0
+
