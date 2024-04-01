@@ -1,0 +1,16 @@
+diff --git a/libpthread/linuxthreads/signals.c b/libpthread/linuxthreads/signals.c
+index 91b88e2c7..907510878 100644
+--- a/libpthread/linuxthreads/signals.c
++++ b/libpthread/linuxthreads/signals.c
+@@ -155,10 +155,9 @@ printf(__FUNCTION__": pthreads wrapper!\n");
+ 	    newact.sa_handler = (__sighandler_t) pthread_sighandler_rt;
+ 	  else
+ 	    newact.sa_handler = (__sighandler_t) pthread_sighandler;
++	  sighandler[sig].old = (arch_sighandler_t) act->sa_handler;
+ 	}
+       newactp = &newact;
+-      if (sig > 0 && sig < NSIG)
+-	sighandler[sig].old = (arch_sighandler_t) act->sa_handler;
+     }
+   else
+     newactp = NULL;
