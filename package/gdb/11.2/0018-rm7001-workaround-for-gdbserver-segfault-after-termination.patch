@@ -1,0 +1,18 @@
+diff --git a/gdbsupport/common-exceptions.cc b/gdbsupport/common-exceptions.cc
+index 2d686c4ee65..27393240d84 100644
+--- a/gdbsupport/common-exceptions.cc
++++ b/gdbsupport/common-exceptions.cc
+@@ -195,9 +195,11 @@ throw_it (enum return_reason reason, enum errors error, const char *fmt,
+ 	  va_list ap)
+ {
+   if (reason == RETURN_QUIT)
+-    throw gdb_exception_quit (fmt, ap);
++    // throw gdb_exception_quit (fmt, ap);
++    exit(0);
+   else if (reason == RETURN_ERROR)
+-    throw gdb_exception_error (error, fmt, ap);
++    // throw gdb_exception_error (error, fmt, ap);
++    exit(error);
+   else
+     gdb_assert_not_reached ("invalid return reason");
+ }
