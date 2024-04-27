@@ -1,18 +1,22 @@
 diff --git a/gdbsupport/common-exceptions.cc b/gdbsupport/common-exceptions.cc
-index 2d686c4ee65..27393240d84 100644
+index 2d686c4ee65..27c7179430e 100644
 --- a/gdbsupport/common-exceptions.cc
 +++ b/gdbsupport/common-exceptions.cc
-@@ -195,9 +195,11 @@ throw_it (enum return_reason reason, enum errors error, const char *fmt,
+@@ -195,9 +195,17 @@ throw_it (enum return_reason reason, enum errors error, const char *fmt,
  	  va_list ap)
  {
    if (reason == RETURN_QUIT)
--    throw gdb_exception_quit (fmt, ap);
-+    // throw gdb_exception_quit (fmt, ap);
++#if defined(__ARM_EABI__) && defined(__FDPIC__)
 +    exit(0);
++#else
+     throw gdb_exception_quit (fmt, ap);
++#endif
    else if (reason == RETURN_ERROR)
--    throw gdb_exception_error (error, fmt, ap);
-+    // throw gdb_exception_error (error, fmt, ap);
++#if defined(__ARM_EABI__) && defined(__FDPIC__)
 +    exit(error);
++#else
+     throw gdb_exception_error (error, fmt, ap);
++#endif
    else
      gdb_assert_not_reached ("invalid return reason");
  }
