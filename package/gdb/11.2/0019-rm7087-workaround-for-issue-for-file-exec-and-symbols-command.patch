@@ -1,0 +1,14 @@
+diff --git a/gdb/solib-fdpic.c b/gdb/solib-fdpic.c
+index 6e1550627b7..332953859fa 100644
+--- a/gdb/solib-fdpic.c
++++ b/gdb/solib-fdpic.c
+@@ -435,6 +435,9 @@ fdpic_relocate_main_executable (void)
+   if (solib_fdpic_debug)
+     fprintf_unfiltered (gdb_stdlog, " %s\n", __FUNCTION__);
+
++  if (!target_has_execution ())
++    return;
++
+   /* Get interpreter loadmap to see if we have a static or dynamic binary.  */
+   loadmap = fdpic_get_initial_loadmaps (1);
+   if (!loadmap)
