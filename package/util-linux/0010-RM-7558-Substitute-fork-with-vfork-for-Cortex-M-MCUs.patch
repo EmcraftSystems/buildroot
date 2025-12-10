@@ -1,0 +1,67 @@
+From ac20cbd4c1d4b17d88fb6ee5c37e226261ea3d4a Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 10 Dec 2025 17:29:49 +0500
+Subject: [PATCH] RM-7558: Substitute fork with vfork for Cortex-M MCUs
+
+---
+ lib/canonicalize.c          | 2 +-
+ lib/pager.c                 | 2 +-
+ libblkid/src/topology/dm.c  | 2 +-
+ libblkid/src/topology/lvm.c | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/lib/canonicalize.c b/lib/canonicalize.c
+index 6f85b47..6ec5155 100644
+--- a/lib/canonicalize.c
++++ b/lib/canonicalize.c
+@@ -159,7 +159,7 @@ char *canonicalize_path_restricted(const char *path)
+ 	 * but if we do that, we lose ability to reassume euid of 0, so
+ 	 * we fork to do the check to keep euid intact.
+ 	 */
+-	pid = fork();
++	pid = vfork();
+ 	switch (pid) {
+ 	case -1:
+ 		close(pipes[0]);
+diff --git a/lib/pager.c b/lib/pager.c
+index 747521e..b8982b1 100644
+--- a/lib/pager.c
++++ b/lib/pager.c
+@@ -70,7 +70,7 @@ static int start_command(struct child_process *cmd)
+ 	}
+ 
+ 	fflush(NULL);
+-	cmd->pid = fork();
++	cmd->pid = vfork();
+ 	if (!cmd->pid) {
+ 		if (need_in) {
+ 			dup2(fdin[0], STDIN_FILENO);
+diff --git a/libblkid/src/topology/dm.c b/libblkid/src/topology/dm.c
+index b210a80..ff8ca23 100644
+--- a/libblkid/src/topology/dm.c
++++ b/libblkid/src/topology/dm.c
+@@ -61,7 +61,7 @@ static int probe_dm_tp(blkid_probe pr,
+ 		goto nothing;
+ 	}
+ 
+-	switch (fork()) {
++	switch (vfork()) {
+ 	case 0:
+ 	{
+ 		const char *dmargv[7];
+diff --git a/libblkid/src/topology/lvm.c b/libblkid/src/topology/lvm.c
+index 6ab7a50..9fb3efd 100644
+--- a/libblkid/src/topology/lvm.c
++++ b/libblkid/src/topology/lvm.c
+@@ -71,7 +71,7 @@ static int probe_lvm_tp(blkid_probe pr,
+ 		goto nothing;
+ 	}
+ 
+-	switch (fork()) {
++	switch (vfork()) {
+ 	case 0:
+ 	{
+ 		char *lvargv[3];
+-- 
+2.25.1
+

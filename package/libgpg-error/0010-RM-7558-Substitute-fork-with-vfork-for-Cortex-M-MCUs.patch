@@ -1,0 +1,52 @@
+From 8c23ec983771e800a94033ea4feab6fb2fa6591b Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 10 Dec 2025 13:24:42 +0500
+Subject: [PATCH] RM-7558: Substitute fork with vfork for Cortex-M MCUs
+
+---
+ src/spawn-posix.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/spawn-posix.c b/src/spawn-posix.c
+index d33bade..6aca65c 100644
+--- a/src/spawn-posix.c
++++ b/src/spawn-posix.c
+@@ -464,7 +464,7 @@ _gpgrt_spawn_process (const char *pgmname, const char *argv[],
+     }
+ 
+   _gpgrt_pre_syscall ();
+-  *pid = fork ();
++  *pid = vfork ();
+   _gpgrt_post_syscall ();
+   if (*pid == (pid_t)(-1))
+     {
+@@ -534,7 +534,7 @@ _gpgrt_spawn_process_fd (const char *pgmname, const char *argv[],
+   gpg_error_t err;
+ 
+   _gpgrt_pre_syscall ();
+-  *pid = fork ();
++  *pid = vfork ();
+   _gpgrt_post_syscall ();
+   if (*pid == (pid_t)(-1))
+     {
+@@ -818,7 +818,7 @@ _gpgrt_spawn_process_detached (const char *pgmname, const char *argv[],
+     return _gpg_err_code_from_syserror ();
+ 
+   _gpgrt_pre_syscall ();
+-  pid = fork ();
++  pid = vfork ();
+   _gpgrt_post_syscall ();
+   if (pid == (pid_t)(-1))
+     {
+@@ -835,7 +835,7 @@ _gpgrt_spawn_process_detached (const char *pgmname, const char *argv[],
+       if (setsid() == -1 || chdir ("/"))
+         _exit (1);
+ 
+-      pid2 = fork (); /* Double fork to let init take over the new child. */
++      pid2 = vfork (); /* Double fork to let init take over the new child. */
+       if (pid2 == (pid_t)(-1))
+         _exit (1);
+       if (pid2)
+-- 
+2.25.1
+

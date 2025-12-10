@@ -1,0 +1,33 @@
+From 4792daa0b7b879e619f0cfd680dc1d741218bfb2 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 10 Dec 2025 13:21:54 +0500
+Subject: [PATCH] RM-7558: Substitute fork with vfork for Cortex-M MCUs
+
+---
+ src/posix-io.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/posix-io.c b/src/posix-io.c
+index 5c6cf1d..501550d 100644
+--- a/src/posix-io.c
++++ b/src/posix-io.c
+@@ -538,14 +538,14 @@ _gpgme_io_spawn (const char *path, char *const argv[], unsigned int flags,
+         TRACE_LOG  ("fd[%i] = 0x%x -> 0x%x", i,fd_list[i].fd,fd_list[i].dup_to);
+     }
+ 
+-  pid = fork ();
++  pid = vfork ();
+   if (pid == -1)
+     return TRACE_SYSRES (-1);
+ 
+   if (!pid)
+     {
+       /* Intermediate child to prevent zombie processes.  */
+-      if ((pid = fork ()) == 0)
++      if ((pid = vfork ()) == 0)
+ 	{
+ 	  /* Child.  */
+           int max_fds = -1;
+-- 
+2.25.1
+

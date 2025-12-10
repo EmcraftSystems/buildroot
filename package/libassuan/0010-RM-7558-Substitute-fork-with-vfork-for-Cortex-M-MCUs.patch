@@ -1,0 +1,25 @@
+From 65fb5fdccf2785ab76201e46056b370053d51ec3 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 10 Dec 2025 13:23:12 +0500
+Subject: [PATCH] RM-7558: Substitute fork with vfork for Cortex-M MCUs
+
+---
+ src/system-posix.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/system-posix.c b/src/system-posix.c
+index b7da9e3..2858880 100644
+--- a/src/system-posix.c
++++ b/src/system-posix.c
+@@ -275,7 +275,7 @@ __assuan_spawn (assuan_context_t ctx, pid_t *r_pid, const char *name,
+ {
+   int pid;
+ 
+-  pid = fork ();
++  pid = vfork ();
+   if (pid < 0)
+     return -1;
+ 
+-- 
+2.25.1
+

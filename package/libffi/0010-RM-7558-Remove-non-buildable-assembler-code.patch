@@ -1,0 +1,67 @@
+From 6b5c7dff4bb363da9e0d686b6e64c10a8f905b2e Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Tue, 3 Mar 2026 18:09:41 +0500
+Subject: [PATCH] RM-7558: Remove non-buildable assembler code
+
+---
+ src/arm/sysv.S | 40 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/src/arm/sysv.S b/src/arm/sysv.S
+index fb36213..f77454e 100644
+--- a/src/arm/sysv.S
++++ b/src/arm/sysv.S
+@@ -94,6 +94,45 @@
+ 
+ 	.text
+ 	.syntax unified
++#if defined(__ARM_ARCH_7EM__)
++/* Define empty functions for Thumb2 just to make the code build */
++ARM_FUNC_START(ffi_call_VFP)
++	bkpt
++ARM_FUNC_END(ffi_call_VFP)
++ARM_FUNC_START(ffi_call_SYSV)
++	bkpt
++ARM_FUNC_END(ffi_call_SYSV)
++ARM_FUNC_START(ffi_go_closure_SYSV)
++	bkpt
++ARM_FUNC_END(ffi_go_closure_SYSV)
++ARM_FUNC_START(ffi_closure_SYSV)
++	bkpt
++ARM_FUNC_END(ffi_closure_SYSV)
++ARM_FUNC_START(ffi_go_closure_VFP)
++	bkpt
++ARM_FUNC_END(ffi_go_closure_VFP)
++ARM_FUNC_START(ffi_closure_VFP)
++	bkpt
++ARM_FUNC_END(ffi_closure_VFP)
++ARM_FUNC_START_LOCAL(ffi_closure_ret)
++	bkpt
++ARM_FUNC_END(ffi_closure_ret)
++ARM_FUNC_START(ffi_closure_SYSV_alt)
++	bkpt
++ARM_FUNC_END(ffi_closure_SYSV_alt)
++ARM_FUNC_START(ffi_closure_VFP_alt)
++	bkpt
++ARM_FUNC_END(ffi_closure_VFP_alt)
++ARM_FUNC_START(trampoline_code_table)
++	bkpt
++ARM_FUNC_END(trampoline_code_table)
++ARM_FUNC_START(ffi_closure_trampoline_table_page)
++	bkpt
++ARM_FUNC_END(ffi_closure_trampoline_table_page)
++ARM_FUNC_START(ffi_arm_trampoline)
++	bkpt
++ARM_FUNC_END(ffi_arm_trampoline)
++#else
+ #if defined(_WIN32)
+ 	/* Windows on ARM is thumb-only */
+ 	.thumb
+@@ -487,3 +526,4 @@ ARM_FUNC_END(ffi_arm_trampoline)
+ #if defined __ELF__ && defined __linux__
+ 	.section	.note.GNU-stack,"",%progbits
+ #endif
++#endif
+-- 
+2.34.1
+

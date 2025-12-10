@@ -1,0 +1,39 @@
+From 706365a7aa9a3ee9823062d50214c83e6b350f27 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 10 Dec 2025 13:20:43 +0500
+Subject: [PATCH] RM-7558: Substitute fork with vfork for Cortex-M MCUs
+
+---
+ src/libostree/ostree-sysroot-deploy.c | 2 +-
+ src/libostree/ostree-sysroot.c        | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/libostree/ostree-sysroot-deploy.c b/src/libostree/ostree-sysroot-deploy.c
+index 2dc9f58..dadafbe 100644
+--- a/src/libostree/ostree-sysroot-deploy.c
++++ b/src/libostree/ostree-sysroot-deploy.c
+@@ -1423,7 +1423,7 @@ fsfreeze_thaw_cycle (OstreeSysroot *self,
+   glnx_autofd int sock_parent = sockpair[0];
+   glnx_autofd int sock_watchdog = sockpair[1];
+ 
+-  pid_t pid = fork ();
++  pid_t pid = vfork ();
+   if (pid < 0)
+     return glnx_throw_errno_prefix (error, "fork");
+ 
+diff --git a/src/libostree/ostree-sysroot.c b/src/libostree/ostree-sysroot.c
+index b15265f..d04e0d7 100644
+--- a/src/libostree/ostree-sysroot.c
++++ b/src/libostree/ostree-sysroot.c
+@@ -2136,7 +2136,7 @@ ostree_sysroot_deployment_unlock (OstreeSysroot     *self,
+    * threads, etc.
+    */
+   {
+-    pid_t mount_child = fork ();
++    pid_t mount_child = vfork ();
+     if (mount_child < 0)
+       return glnx_throw_errno_prefix (error, "fork");
+     else if (mount_child == 0)
+-- 
+2.25.1
+
