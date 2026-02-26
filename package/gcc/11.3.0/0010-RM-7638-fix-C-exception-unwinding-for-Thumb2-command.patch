@@ -1,0 +1,38 @@
+From 465270e345ed00df4d28163ccd5e591c9c1c1c00 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Thu, 26 Feb 2026 15:24:34 +0500
+Subject: [PATCH] RM-7638: fix C++ exception unwinding for Thumb2 command set
+
+---
+ libgcc/unwind-arm-common.inc | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/libgcc/unwind-arm-common.inc b/libgcc/unwind-arm-common.inc
+index ef34153..4ad5f69 100644
+--- a/libgcc/unwind-arm-common.inc
++++ b/libgcc/unwind-arm-common.inc
+@@ -417,6 +417,21 @@ get_eit_entry (_Unwind_Control_Block *ucbp, _uw return_address)
+     {
+       /* Execute region offset to PR */
+       UCB_PR_ADDR (ucbp) = selfrel_offset31 (ucbp->pr_cache.ehtp);
++#if __thumb2__
++      /* selfrel_offset31() decodes a prel31-encoded address from .ARM.exidx.
++	 In the ARM EHABI, the prel31 encoding for personality routines does
++	 not reliably preserve the Thumb interworking bit (bit 0) — the
++	 offset is computed against the actual code address, which is always even.
++	 If the decoded address is then called without bit 0 set from Thumb2 mode,
++	 the CPU switches to ARM mode and crashes or executes garbage, which is
++	 exactly the symptom of broken unwinding.
++
++	 Setting bit 0 unconditionally when __thumb2__ is defined is safe because:
++	 - If bit 0 was already set by selfrel_offset31(), |= 1 is a no-op
++	 - In a Thumb2 build, all code (including personality routines in libgcc)
++	 is Thumb2, so bit 0 should always be set */
++      UCB_PR_ADDR (ucbp) |= 1;
++#endif
+ #if __FDPIC__
+       UCB_PR_GOT (ucbp)
+ 	= (unsigned int) _Unwind_gnu_Find_got ((_Unwind_Ptr) UCB_PR_ADDR (ucbp));
+-- 
+2.34.1
+
