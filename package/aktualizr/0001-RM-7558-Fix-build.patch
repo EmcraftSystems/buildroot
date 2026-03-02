@@ -1,0 +1,29 @@
+From a27cb0d5c157cd426e8dcdefb3ddff483c546d38 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Sat, 21 Feb 2026 12:33:30 +0500
+Subject: [PATCH] RM-7558: Fix build
+
+---
+ src/torizon/generic_secondary/torizongenericsecondary.cc | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/torizon/generic_secondary/torizongenericsecondary.cc b/src/torizon/generic_secondary/torizongenericsecondary.cc
+index e152bf3..03e5478 100644
+--- a/src/torizon/generic_secondary/torizongenericsecondary.cc
++++ b/src/torizon/generic_secondary/torizongenericsecondary.cc
+@@ -499,9 +499,10 @@ TorizonGenericSecondary::ActionHandlerResult TorizonGenericSecondary::callAction
+     return ActionHandlerResult::NotAvailable;
+   }
+ 
+-  if (WIFSIGNALED(action_proc.native_exit_code())) {
++  int result = action_proc.native_exit_code();
++  if (WIFSIGNALED(result)) {
+     LOG_WARNING << "Action-handler " << config_.action_handler_path << " (action=" << action << ")"
+-                << " terminated by signal #" << WTERMSIG(action_proc.native_exit_code());
++                << " terminated by signal #" << WTERMSIG(result);
+     return ActionHandlerResult::NotAvailable;
+   }
+ 
+-- 
+2.34.1
+
