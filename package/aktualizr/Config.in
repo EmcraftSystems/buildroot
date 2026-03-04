@@ -1,0 +1,13 @@
+config BR2_PACKAGE_AKTUALIZR
+	bool "Aktualizr"
+	depends on BR2_PACKAGE_LIBOSTREE
+	depends on BR2_PACKAGE_BOOST
+	depends on BR2_PACKAGE_LIBCURL
+	depends on BR2_PACKAGE_LIBOPENSSL
+	depends on BR2_PACKAGE_LIBARCHIVE
+	depends on BR2_PACKAGE_LIBSODIUM
+	depends on BR2_PACKAGE_SQLITE
+	depends on BR2_PACKAGE_HOST_ASN1C
+	depends on BR2_PACKAGE_JSONCPP
+	help
+	  C++ implementation of Uptane OTA update client.

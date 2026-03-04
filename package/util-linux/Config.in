@@ -14,7 +14,7 @@ config BR2_PACKAGE_UTIL_LINUX_LIBS
 
 config BR2_PACKAGE_UTIL_LINUX_LIBBLKID
 	bool "libblkid"
-	depends on BR2_USE_MMU # fork()
+	depends on BR2_USE_MMU || ((BR2_arm || BR2_armeb) && BR2_BINFMT_FDPIC) # fork()
 	help
 	  Install libblkid.
 
@@ -46,7 +46,7 @@ config BR2_PACKAGE_UTIL_LINUX_LIBUUID
 
 config BR2_PACKAGE_UTIL_LINUX_BINARIES
 	bool "basic set"
-	depends on BR2_USE_MMU # fork()
+	depends on BR2_USE_MMU || ((BR2_arm || BR2_armeb) && BR2_BINFMT_FDPIC) # fork()
 	select BR2_PACKAGE_UTIL_LINUX_LIBBLKID
 	select BR2_PACKAGE_UTIL_LINUX_LIBMOUNT
 	select BR2_PACKAGE_UTIL_LINUX_LIBFDISK

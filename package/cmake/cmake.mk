@@ -32,7 +32,8 @@ CMAKE_CONF_OPTS = \
 	-DKWSYS_CHAR_IS_SIGNED=TRUE \
 	-DCMAKE_USE_SYSTEM_LIBRARIES=1 \
 	-DCTEST_USE_XMLRPC=OFF \
-	-DBUILD_CursesDialog=OFF
+	-DBUILD_CursesDialog=OFF \
+	-DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 # Get rid of -I* options from $(HOST_CPPFLAGS) to prevent that a
 # header available in $(HOST_DIR)/include is used instead of a

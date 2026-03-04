@@ -1,0 +1,85 @@
+From 42f0c48fc80f31673d7886d5534392d17d490b17 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 10 Dec 2025 17:59:06 +0500
+Subject: [PATCH] RM-7558: Substitute fork with vfork for Cortex-M MCUs
+
+---
+ gio/gtestdbus.c   | 2 +-
+ glib/gbacktrace.c | 4 ++--
+ glib/gspawn.c     | 4 ++--
+ glib/gtestutils.c | 2 +-
+ 4 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/gio/gtestdbus.c b/gio/gtestdbus.c
+index 992d29c..522e107 100644
+--- a/gio/gtestdbus.c
++++ b/gio/gtestdbus.c
+@@ -263,7 +263,7 @@ watcher_init (void)
+       fflush (stdout);
+       fflush (stderr);
+ 
+-      switch (fork ())
++      switch (vfork ())
+         {
+         case -1:
+           errsv = errno;
+diff --git a/glib/gbacktrace.c b/glib/gbacktrace.c
+index 77cef10..df238d6 100644
+--- a/glib/gbacktrace.c
++++ b/glib/gbacktrace.c
+@@ -271,7 +271,7 @@ g_on_error_stack_trace (const gchar *prg_name)
+   args[2] = buf;
+ #endif
+ 
+-  pid = fork ();
++  pid = vfork ();
+   if (pid == 0)
+     {
+       stack_trace (args);
+@@ -337,7 +337,7 @@ stack_trace (const char * const *args)
+       _exit (0);
+     }
+ 
+-  pid = fork ();
++  pid = vfork ();
+   if (pid == 0)
+     {
+       /* Save stderr for printing failure below */
+diff --git a/glib/gspawn.c b/glib/gspawn.c
+index 0a2cbe5..d71fc66 100644
+--- a/glib/gspawn.c
++++ b/glib/gspawn.c
+@@ -2358,7 +2358,7 @@ fork_exec (gboolean              intermediate_child,
+   if (intermediate_child && !g_unix_open_pipe (child_pid_report_pipe, pipe_flags, error))
+     goto cleanup_and_fail;
+   
+-  pid = fork ();
++  pid = vfork ();
+ 
+   if (pid < 0)
+     {
+@@ -2411,7 +2411,7 @@ fork_exec (gboolean              intermediate_child,
+            */
+           GPid grandchild_pid;
+ 
+-          grandchild_pid = fork ();
++          grandchild_pid = vfork ();
+ 
+           if (grandchild_pid < 0)
+             {
+diff --git a/glib/gtestutils.c b/glib/gtestutils.c
+index dca4bad..1f3036f 100644
+--- a/glib/gtestutils.c
++++ b/glib/gtestutils.c
+@@ -3667,7 +3667,7 @@ g_test_trap_fork (guint64        usec_timeout,
+       errsv = errno;
+       g_error ("failed to create pipes to fork test program: %s", g_strerror (errsv));
+     }
+-  test_trap_last_pid = fork ();
++  test_trap_last_pid = vfork ();
+   errsv = errno;
+   if (test_trap_last_pid < 0)
+     g_error ("failed to fork test program: %s", g_strerror (errsv));
+-- 
+2.25.1
+

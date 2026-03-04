@@ -1,0 +1,37 @@
+From e4a027b76f3a1c20cc0cfbed8186c39bbd41faac Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 18 Feb 2026 11:53:01 +0500
+Subject: [PATCH] save work
+
+---
+ CMakeLists.txt | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5b47871..a7d8d78 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -18,7 +18,7 @@ else()
+     set(TESTSUITE_VALGRIND_DEFAULT OFF)
+ endif()
+
+-option(WARNING_AS_ERROR "Treat warnings as errors" ON)
++option(WARNING_AS_ERROR "Treat warnings as errors" OFF)
+ option(PEDANTIC_WARNINGS "Compile with pedantic warnings" OFF)
+ option(BUILD_WITH_CODE_COVERAGE "Enable gcov code coverage" OFF)
+ option(BUILD_OSTREE "Set to ON to compile with OSTree support" OFF)
+@@ -191,10 +191,10 @@ SET(CMAKE_C_FLAGS_TSAN "-O1 -g -fsanitize=thread -fno-omit-frame-pointer")
+ SET(CMAKE_EXE_LINKER_FLAGS_TSAN "-O1 -g -fsanitize=thread -fno-omit-frame-pointer")
+
+ if (CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
+-    add_definitions(-fstack-protector-all)
++    #add_definitions(-fstack-protector-all)
+     # Enable maximum set of warnings
+     # TODO Add [[nodiscard]] everywhere and remove this
+-    add_definitions(-Wall -Wextra -Wformat-security -Wfloat-equal -Wcast-qual -Wswitch-default -Wconversion -Wno-modernize-use-nodiscard)
++    add_definitions(-Wall -Wextra -Wformat-security -Wfloat-equal -Wcast-qual -Wswitch-default)# -Wconversion -Wno-modernize-use-nodiscard)
+     # only for CXX, gcc doesn't like that when building C...
+     if (WARNING_AS_ERROR)
+         add_definitions(-Werror)
+--
+2.34.1

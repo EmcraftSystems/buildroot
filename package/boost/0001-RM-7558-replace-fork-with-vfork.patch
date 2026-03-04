@@ -1,0 +1,34 @@
+From f38bca2dd283ecedc84d7b8cc79518789cce10c8 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 18 Feb 2026 19:52:00 +0500
+Subject: [PATCH] RM-7558: replace fork with vfork
+
+---
+ boost/process/detail/posix/executor.hpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/boost/process/detail/posix/executor.hpp b/boost/process/detail/posix/executor.hpp
+index ca7713c13..5d032cb8e 100644
+--- a/boost/process/detail/posix/executor.hpp
++++ b/boost/process/detail/posix/executor.hpp
+@@ -336,7 +336,7 @@ child executor<Sequence>::invoke(boost::mpl::true_, boost::mpl::false_) //ignore
+     if (cmd_style)
+         prepare_cmd_style();
+ 
+-    this->pid = ::fork();
++    this->pid = ::vfork();
+     if (pid == -1)
+     {
+         auto ec = boost::process::detail::get_last_error();
+@@ -400,7 +400,7 @@ child executor<Sequence>::invoke(boost::mpl::false_, boost::mpl::false_)
+         if (cmd_style)
+             prepare_cmd_style();
+ 
+-        this->pid = ::fork();
++        this->pid = ::vfork();
+         if (pid == -1)
+         {
+             _ec = boost::process::detail::get_last_error();
+-- 
+2.34.1
+

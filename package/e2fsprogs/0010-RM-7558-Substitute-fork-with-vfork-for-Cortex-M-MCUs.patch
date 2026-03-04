@@ -1,0 +1,155 @@
+From 6b9da7193ebb2293c481237e12bf2a3dcee4a639 Mon Sep 17 00:00:00 2001
+From: Dmitry Konyshev <probables@emcraft.com>
+Date: Wed, 10 Dec 2025 10:22:01 +0500
+Subject: [PATCH] RM-7558: Substitute fork with vfork for Cortex-M MCUs
+
+---
+ contrib/fsstress.c  | 2 +-
+ e2fsck/logfile.c    | 2 +-
+ lib/fpopen.c        | 2 +-
+ lib/ss/help.c       | 2 +-
+ lib/ss/pager.c      | 2 +-
+ lib/uuid/gen_uuid.c | 2 +-
+ misc/fsck.c         | 4 ++--
+ misc/logsave.c      | 4 ++--
+ misc/uuidd.c        | 2 +-
+ 9 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/contrib/fsstress.c b/contrib/fsstress.c
+index 2136a90..c05fe7b 100644
+--- a/contrib/fsstress.c
++++ b/contrib/fsstress.c
+@@ -521,7 +521,7 @@ int main(int argc, char **argv)
+ 			}
+ 
+ 			for (i = 0; i < nproc; i++) {
+-				if (fork() == 0) {
++				if (vfork() == 0) {
+ 
+ 					action.sa_handler = SIG_DFL;
+ 					sigemptyset(&action.sa_mask);
+diff --git a/e2fsck/logfile.c b/e2fsck/logfile.c
+index 63e9a12..dcfa944 100644
+--- a/e2fsck/logfile.c
++++ b/e2fsck/logfile.c
+@@ -228,7 +228,7 @@ static FILE *save_output(const char *s0, const char *s1, const char *s2)
+ 		exit(1);
+ 	}
+ 
+-	pid = fork();
++	pid = vfork();
+ 	if (pid < 0) {
+ 		perror("fork");
+ 		exit(1);
+diff --git a/lib/fpopen.c b/lib/fpopen.c
+index 60af208..3e9cd7c 100644
+--- a/lib/fpopen.c
++++ b/lib/fpopen.c
+@@ -94,7 +94,7 @@ FILE *fpopen(const char *cmd, const char *mode)
+ 		return NULL;
+ 
+ 	/* Fork and execute the correct program. */
+-	if ((pid = fork()) < 0) {
++	if ((pid = vfork()) < 0) {
+ 		perror("fork");
+ 		return NULL;
+ 	} else if (pid == 0) {
+diff --git a/lib/ss/help.c b/lib/ss/help.c
+index a22b401..b5463c3 100644
+--- a/lib/ss/help.c
++++ b/lib/ss/help.c
+@@ -108,7 +108,7 @@ void ss_help(int argc, char const * const *argv, int sci_idx, pointer info_ptr)
+ 	free(buf);
+ 	return;
+     }
+-    switch (child = fork()) {
++    switch (child = vfork()) {
+     case -1:
+ 	ss_perror(sci_idx, errno, "Can't fork for pager");
+ 	(void) close(fd);
+diff --git a/lib/ss/pager.c b/lib/ss/pager.c
+index b9b8899..d6af102 100644
+--- a/lib/ss/pager.c
++++ b/lib/ss/pager.c
+@@ -80,7 +80,7 @@ int ss_pager_create(void)
+ 	if (pipe(filedes) != 0)
+ 		return(-1);
+ 
+-	switch(fork()) {
++	switch(vfork()) {
+ 	case -1:
+ 		return(-1);
+ 	case 0:
+diff --git a/lib/uuid/gen_uuid.c b/lib/uuid/gen_uuid.c
+index 14c98eb..e2dd11b 100644
+--- a/lib/uuid/gen_uuid.c
++++ b/lib/uuid/gen_uuid.c
+@@ -539,7 +539,7 @@ static int get_uuid_via_daemon(int op, uuid_t out, int *num)
+ 		if (access_ret == 0 && (st.st_mode & (S_ISUID | S_ISGID)) == 0)
+ 			access_ret = access(UUIDD_DIR, W_OK);
+ 		if (access_ret == 0 && start_attempts++ < 5) {
+-			if ((pid = fork()) == 0) {
++			if ((pid = vfork()) == 0) {
+ 				close_all_fds();
+ 				execl(uuidd_path, "uuidd", "-qT", "300",
+ 				      (char *) NULL);
+diff --git a/misc/fsck.c b/misc/fsck.c
+index 4efe10e..f9e5f51 100644
+--- a/misc/fsck.c
++++ b/misc/fsck.c
+@@ -498,7 +498,7 @@ static int execute(const char *type, const char *device, const char *mntpt,
+ 	/* Fork and execute the correct program. */
+ 	if (noexecute)
+ 		pid = -1;
+-	else if ((pid = fork()) < 0) {
++	else if ((pid = vfork()) < 0) {
+ 		perror("fork");
+ 		free(inst);
+ 		return errno;
+@@ -648,7 +648,7 @@ static struct fsck_instance *wait_one(int flags)
+ 			 * time to set up the signal handler
+ 			 */
+ 			if (inst2->start_time < time(0)+2) {
+-				if (fork() == 0) {
++				if (vfork() == 0) {
+ 					sleep(1);
+ 					kill(inst2->pid, SIGUSR1);
+ 					exit(0);
+diff --git a/misc/logsave.c b/misc/logsave.c
+index 96b6d8e..f037c6e 100644
+--- a/misc/logsave.c
++++ b/misc/logsave.c
+@@ -181,7 +181,7 @@ static int run_program(char **argv)
+ #endif
+ #endif
+ 
+-	pid = fork();
++	pid = vfork();
+ 	if (pid < 0) {
+ 		perror("vfork");
+ 		exit(1);
+@@ -308,7 +308,7 @@ int main(int argc, char **argv)
+ 	send_output("----------------\n", 0, send_flag);
+ 
+ 	if (outbuf) {
+-		pid = fork();
++		pid = vfork();
+ 		if (pid < 0) {
+ 			perror("fork");
+ 			exit(1);
+diff --git a/misc/uuidd.c b/misc/uuidd.c
+index 4db3fa9..7ebcb88 100644
+--- a/misc/uuidd.c
++++ b/misc/uuidd.c
+@@ -65,7 +65,7 @@ static void create_daemon(void)
+ 	pid_t pid;
+ 	uid_t euid;
+ 
+-	pid = fork();
++	pid = vfork();
+ 	if (pid == -1) {
+ 		perror("fork");
+ 		exit(1);
+-- 
+2.25.1
+
