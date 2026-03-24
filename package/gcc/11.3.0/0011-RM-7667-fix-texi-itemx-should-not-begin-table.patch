@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Buildroot <buildroot@buildroot.org>
+Date: Thu, 19 Mar 2026 00:00:00 +0000
+Subject: [PATCH] gcc/doc: fix @itemx should not begin @table in extend.texi
+
+Newer texinfo (>= 7.x) enforces that @itemx cannot be the first entry
+in a @table — it must follow an @item. GCC 11.3.0 has this mistake at
+the "access" attribute entry. Change the first @itemx to @item.
+
+Signed-off-by: Buildroot <buildroot@buildroot.org>
+---
+ gcc/doc/extend.texi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/gcc/doc/extend.texi b/gcc/doc/extend.texi
+index 689ec7de4d..84f9b9ecd6 100644
+--- a/gcc/doc/extend.texi
++++ b/gcc/doc/extend.texi
+@@ -2487,7 +2487,7 @@
+ @table @code
+ @c Keep this table alphabetized by attribute name.  Treat _ as space.
+
+-@itemx access (@var{access-mode}, @var{ref-index})
++@item access (@var{access-mode}, @var{ref-index})
+ @itemx access (@var{access-mode}, @var{ref-index}, @var{size-index})
+
+ The @code{access} attribute enables the detection of invalid or unsafe
