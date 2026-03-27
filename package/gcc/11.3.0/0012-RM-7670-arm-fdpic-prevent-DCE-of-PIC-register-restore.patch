@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Vladimir Skvortsov <vskvortsov@emcraft.com>
+Date: Wed, 26 Mar 2026 00:00:00 +0000
+Subject: [PATCH] RM-7670: arm: fdpic: prevent DCE of PIC register restore
+ after calls
+
+On ARM FDPIC, every PLT call sets r9 (PIC/GOT register) to the callee
+module's GOT. The caller must restore r9 after each call. GCC emits
+the restore using the restore_pic_register_after_call pattern with
+UNSPEC_PIC_RESTORE.
+
+However, UNSPEC (as opposed to UNSPEC_VOLATILE) allows GCC's Dead Code
+Elimination pass to remove the restore when it determines r9 is not
+live at the restore point. This occurs when an external void function
+call is at the end of an inlined function and control flow branches to
+a different basic block where r9 is used.
+
+Fix by changing unspec to unspec_volatile, preventing DCE from removing
+the PIC register restore under any circumstances.
+
+Signed-off-by: Vladimir Skvortsov <vskvortsov@emcraft.com>
+---
+ gcc/config/arm/arm.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/gcc/config/arm/arm.md
++++ b/gcc/config/arm/arm.md
+@@ -8567,7 +8567,7 @@
+ (define_insn "restore_pic_register_after_call"
+   [(set (match_operand:SI 0 "s_register_operand" "+r,r")
+-        (unspec:SI [(match_dup 0)
++        (unspec_volatile:SI [(match_dup 0)
+                     (match_operand:SI 1 "nonimmediate_operand" "r,m")]
+                    UNSPEC_PIC_RESTORE))]
+   ""
