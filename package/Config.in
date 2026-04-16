@@ -2362,6 +2362,7 @@ endif
 	source "package/openobex/Config.in"
 	source "package/openresolv/Config.in"
 	source "package/openssh/Config.in"
+	source "package/openssh-sftp-server/Config.in"
 	source "package/openswan/Config.in"
 	source "package/openvpn/Config.in"
 	source "package/p910nd/Config.in"
