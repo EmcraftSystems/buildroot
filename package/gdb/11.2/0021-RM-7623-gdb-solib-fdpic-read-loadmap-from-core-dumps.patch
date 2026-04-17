@@ -1,0 +1,117 @@
+From: Vladimir Skvortsov <vskvortsov@emcraft.com>
+Subject: [PATCH] RM-7623: gdb/solib-fdpic: read initial loadmap from core dumps
+
+For a live inferior, fdpic_get_initial_loadmaps() retrieves the
+main-executable and dynamic-linker loadmaps via
+target_read_alloc (TARGET_OBJECT_FDPIC, ...), which is served by
+gdbserver (see 0012-ARM-FDPIC-Add-gdbserver-support.patch).  For
+core files there is no such backend, so post-mortem sessions
+ended with "No shared libraries loaded at this time" and empty
+backtraces.
+
+The companion BFD change (0020-...) makes the FDPIC-extended
+NT_PRSTATUS note visible: BFD now creates an 80-byte .reg section
+whose tail holds pr_exec_fdpic_loadmap at offset 72 and
+pr_interp_fdpic_loadmap at offset 76.  Read those pointers and
+hand them to the existing fetch_loadmap() helper, which pulls the
+raw loadmap from the core's PT_LOAD segments via
+target_read_memory().
+
+Also soften the early return introduced in
+0019-rm7087-workaround-for-issue-for-file-exec-and-symbols-command.patch.
+That guard skipped relocation when there was no running inferior,
+which is still correct for "file <exec>" with no target, but
+blocks the new core-file path.  Allow the function to proceed
+when a core_bfd is present.
+
+Signed-off-by: Vladimir Skvortsov <vskvortsov@emcraft.com>
+---
+--- a/gdb/solib-fdpic.c
++++ b/gdb/solib-fdpic.c
+@@ -393,18 +393,70 @@
+   return lm_info;
+ }
+ 
++/* For core dumps the loadmap bytes are not available through
++   TARGET_OBJECT_FDPIC.  The Linux kernel instead records the addresses
++   of the exec and interpreter loadmaps in the FDPIC-extended NT_PRSTATUS
++   note (struct elf_prstatus_fdpic in fs/binfmt_elf_fdpic.c).  The BFD
++   backend (bfd/elf32-arm.c, case 156) exposes them as the tail of the
++   .reg pseudosection, so we can retrieve them with
++   bfd_get_section_contents().  Returns 0 on any failure, which the
++   caller treats as "no loadmap available" (i.e. static binary for the
++   interpreter query).  */
++
++static CORE_ADDR
++fdpic_core_loadmap_addr (int is_interpreter)
++{
++  if (core_bfd == NULL)
++    return 0;
++
++  asection *reg_sect = bfd_get_section_by_name (core_bfd, ".reg");
++  if (reg_sect == NULL)
++    return 0;
++
++  /* Stock ARM .reg is 72 bytes; FDPIC-extended .reg is 80.  */
++  if (bfd_section_size (reg_sect) < 72 + 4 + 4)
++    return 0;
++
++  gdb_byte buf[4];
++  file_ptr off = is_interpreter ? 76 : 72;
++  if (!bfd_get_section_contents (core_bfd, reg_sect, buf, off, sizeof buf))
++    return 0;
++
++  enum bfd_endian byte_order = gdbarch_byte_order (target_gdbarch ());
++  return extract_unsigned_integer (buf, sizeof buf, byte_order);
++}
++
+ static struct int_elf32_fdpic_loadmap *
+ fdpic_get_initial_loadmaps (int is_interpreter)
+ {
++  if (solib_fdpic_debug)
++    fprintf_unfiltered (gdb_stdlog, "  %s : %d\n", __FUNCTION__, is_interpreter);
++
++  /* Core-file path: only the loadmap *address* is in the core (via the
++     extended NT_PRSTATUS note); the loadmap *contents* live in a
++     PT_LOAD segment.  Read the address from .reg, then reuse
++     fetch_loadmap() which walks target memory.  */
++  if (core_bfd != NULL)
++    {
++      CORE_ADDR ldm_addr = fdpic_core_loadmap_addr (is_interpreter);
++      if (ldm_addr == 0)
++	{
++	  if (!is_interpreter)
++	    error (_("Error reading FDPIC exec loadmap from core"));
++	  return NULL;
++	}
++      struct int_elf32_fdpic_loadmap *res = fetch_loadmap (ldm_addr);
++      if (solib_fdpic_debug)
++	dump_loadmap (res);
++      return res;
++    }
++
+   gdb::optional<gdb::byte_vector> buf
+     = target_read_alloc (current_inferior ()->top_target (),
+ 			 TARGET_OBJECT_FDPIC,
+ 			 is_interpreter ? "interp" : "exec");
+   struct int_elf32_fdpic_loadmap *res;
+ 
+-  if (solib_fdpic_debug)
+-    fprintf_unfiltered (gdb_stdlog, "  %s : %d\n", __FUNCTION__, is_interpreter);
+-
+   /* Read raw loadmap.  */
+   if (!buf || buf->empty ())
+     {
+@@ -435,7 +487,9 @@
+   if (solib_fdpic_debug)
+     fprintf_unfiltered (gdb_stdlog, " %s\n", __FUNCTION__);
+ 
+-  if (!target_has_execution ())
++  /* Allow core-file debugging to proceed; rm7087 guard only needs to
++     skip the "file <exec>" / no-target case.  */
++  if (!target_has_execution () && core_bfd == NULL)
+     return;
+ 
+   /* Get interpreter loadmap to see if we have a static or dynamic binary.  */
+-- 
+2.34.1
