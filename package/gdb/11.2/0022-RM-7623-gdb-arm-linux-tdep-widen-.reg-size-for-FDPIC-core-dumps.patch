@@ -1,0 +1,41 @@
+From: Vladimir Skvortsov <vskvortsov@emcraft.com>
+Subject: [PATCH] RM-7623: gdb/arm-linux-tdep: widen .reg size for FDPIC core dumps
+
+After 0020-... teaches BFD to produce an 80-byte .reg pseudosection
+for FDPIC core dumps, GDB's generic core-section validator compares
+the section's actual size (80) against the size advertised by
+arm_linux_iterate_over_regset_sections (72) and prints:
+
+    warning: Unexpected size of section `.reg/<lwp>' in core file.
+
+The warning is harmless -- arm_linux_supply_gregset reads only the
+first 72 bytes and the trailing 8 bytes are consumed by solib-fdpic
+-- but it clutters every post-mortem session.  Advertise
+ARM_LINUX_SIZEOF_GREGSET + 8 when the gdbarch is FDPIC so the two
+sizes agree.
+
+Signed-off-by: Vladimir Skvortsov <vskvortsov@emcraft.com>
+---
+--- a/gdb/arm-linux-tdep.c
++++ b/gdb/arm-linux-tdep.c
+@@ -776,7 +776,17 @@
+ {
+   struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+ 
+-  cb (".reg", ARM_LINUX_SIZEOF_GREGSET, ARM_LINUX_SIZEOF_GREGSET,
++  /* On FDPIC the kernel writes struct elf_prstatus_fdpic, which inserts
++     pr_exec_fdpic_loadmap and pr_interp_fdpic_loadmap (2 * 4 bytes)
++     between pr_reg and pr_fpvalid.  The BFD backend exposes those
++     trailing bytes as part of .reg (see bfd/elf32-arm.c, case 156), so
++     advertise the larger size here to match and avoid the
++     "Unexpected size of section `.reg/<lwp>'" warning.  The supply
++     callback reads only the first 72 bytes; the extra 8 are consumed
++     by solib-fdpic.  */
++  int gregset_size = ARM_LINUX_SIZEOF_GREGSET + (tdep->is_fdpic ? 8 : 0);
++
++  cb (".reg", gregset_size, gregset_size,
+       &arm_linux_gregset, NULL, cb_data);
+ 
+   if (tdep->vfp_register_count > 0)
+-- 
+2.34.1

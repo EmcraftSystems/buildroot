@@ -1,0 +1,47 @@
+From: Vladimir Skvortsov <vskvortsov@emcraft.com>
+Subject: [PATCH] RM-7623: bfd: recognize FDPIC-extended NT_PRSTATUS in ARM core dumps
+
+The Linux kernel writes `struct elf_prstatus_fdpic`
+(fs/binfmt_elf_fdpic.c) for FDPIC processes, which appends
+pr_exec_fdpic_loadmap and pr_interp_fdpic_loadmap (2 * 4 bytes)
+between pr_reg and pr_fpvalid, making the NT_PRSTATUS note 156 bytes
+instead of the standard 148.  Without recognising descsz == 156 BFD
+rejects the note and no .reg pseudosection is created; GDB then
+reports:
+
+    warning: Couldn't find general-purpose registers in core file.
+
+Accept the extended layout and size the .reg pseudosection at
+72 + 4 + 4 = 80 bytes, so the two loadmap addresses sit at offsets
+72 and 76 within .reg.  Companion changes in gdb/solib-fdpic.c will
+read them via bfd_get_section_contents().  This mirrors the scheme
+used by FRV-FDPIC in bfd/elf32-frv.c.
+
+Signed-off-by: Vladimir Skvortsov <vskvortsov@emcraft.com>
+---
+--- a/bfd/elf32-arm.c
++++ b/bfd/elf32-arm.c
+@@ -2163,6 +2163,21 @@
+ 	size = 72;
+ 
+ 	break;
++
++      case 156:		/* Linux/ARM FDPIC (struct elf_prstatus_fdpic).
++			   Standard prstatus plus pr_exec_fdpic_loadmap and
++			   pr_interp_fdpic_loadmap (2 * 4 bytes) inserted
++			   between pr_reg and pr_fpvalid.  Exposing them as
++			   the tail of the .reg pseudosection lets
++			   solib-fdpic read the loadmap addresses the same
++			   way FRV-FDPIC does in bfd/elf32-frv.c.  */
++	elf_tdata (abfd)->core->signal
++	  = bfd_get_16 (abfd, note->descdata + 12);
++	elf_tdata (abfd)->core->lwpid
++	  = bfd_get_32 (abfd, note->descdata + 24);
++	offset = 72;
++	size   = 72 + 4 + 4;	/* pr_reg + exec + interp loadmap addrs */
++	break;
+     }
+ 
+   /* Make a ".reg/999" section.  */
+-- 
+2.34.1

@@ -1,0 +1,133 @@
+From: Vladimir Skvortsov <vskvortsov@emcraft.com>
+Subject: [PATCH] RM-7623: gdb/arm-tdep: propagate Cortex-M profile into core-dump gdbarch
+
+arm_gdbarch_init decides `is_m' (Cortex-M) by (a) the Cortex-M feature
+in a target description or (b) the ARM build attributes on
+`info.abfd'.  Neither path fires in a post-mortem FDPIC session:
+
+  1. gdbserver is not involved, so there is no m-profile tdesc.  The
+     core target synthesises a generic "org.gnu.gdb.arm.core" tdesc
+     (with cpsr) from the NT_PRSTATUS note, but that feature contains
+     no M-profile marker.
+  2. The Linux FDPIC core dumper (fs/binfmt_elf_fdpic.c with
+     ELF_FDPIC_CORE_EFLAGS == 0) writes a bare ELF with e_flags = 0
+     and no .ARM.attributes section, so Tag_CPU_arch and
+     Tag_CPU_arch_profile read 0 from the core bfd.
+  3. The existing BFD-attribute path for is_m is additionally gated
+     by `!tdesc_has_registers(tdesc)', so even the executable's
+     build attributes on the exec bfd would not reach it once the
+     core target has installed its synthetic arm.core tdesc.
+
+With is_m left false, arm_psr_thumb_bit returns CPSR_T (0x20)
+instead of XPSR_T (0x01000000).  The saved xPSR in pr_reg reads
+0x01000000 (bit 24 set, bit 5 clear), so arm_frame_is_thumb returns
+false for every Thumb PC, arm_scan_prologue runs the ARM-mode
+analyser against Thumb bytes, fails to recognise the prologue, and
+leaves cache->saved_regs in its initial is_realreg state.
+trad_frame_get_prev_register then hands back the current frame's
+pr_reg register values as the caller's registers, so post-mortem
+`bt' stops one frame past the innermost libc entry with
+"previous frame inner to this frame (corrupt stack?)" and any
+argument read through the bogus frame pointer fails with
+"Cannot access memory at address ...".
+
+Fix in three coordinated pieces:
+
+  * When `info.abfd' has no ARM build attributes, fall back to
+    `current_program_space->exec_bfd ()'.  GCC copies
+    Tag_CPU_arch_profile='M' into the executable, so the exec
+    provides the missing tag for cores.
+
+  * Remove the `!tdesc_has_registers(tdesc)' guard from the BFD
+    attribute check.  The build attribute is authoritative: it
+    should promote is_m whether or not the core session happens
+    to carry a synthetic tdesc.
+
+  * Teach the tdesc register-validation block to accept either
+    "xpsr" or "cpsr" for ARM_PS_REGNUM when is_m is true.  A
+    Cortex-M binary with the generic arm.core feature names the
+    PS register "cpsr", and without this fallback the M-profile
+    check would make gdbarch_find_by_info return NULL.
+
+With the fix the gdbarch selected for the core is Cortex-M
+(arm_psr_thumb_bit returns XPSR_T), arm_frame_is_thumb correctly
+identifies Thumb frames, the prologue analyser populates
+cache->saved_regs, and post-mortem `bt' walks the full call chain
+the same way a live gdbserver session does.
+
+Signed-off-by: Vladimir Skvortsov <vskvortsov@emcraft.com>
+---
+--- a/gdb/arm-tdep.c
++++ b/gdb/arm-tdep.c
+@@ -9064,14 +9064,44 @@
+ 		= bfd_elf_get_obj_attr_int (info.abfd, OBJ_ATTR_PROC,
+ 					    Tag_CPU_arch_profile);
+ 
++	      /* Core files written by the Linux FDPIC core dumper carry
++		 no .ARM.attributes section (the kernel sets
++		 ELF_FDPIC_CORE_EFLAGS = 0 and does not copy build
++		 attributes into the core), so info.abfd returns 0 for
++		 both tags above.  Fall back to the current exec bfd --
++		 GCC does copy the attributes into the executable -- so
++		 the M-profile discriminator below still fires for
++		 post-mortem Cortex-M sessions.  */
++	      if (attr_arch == 0 && attr_profile == 0
++		  && current_program_space->exec_bfd () != NULL
++		  && current_program_space->exec_bfd () != info.abfd)
++		{
++		  bfd *exec = current_program_space->exec_bfd ();
++		  attr_arch
++		    = bfd_elf_get_obj_attr_int (exec, OBJ_ATTR_PROC,
++						Tag_CPU_arch);
++		  attr_profile
++		    = bfd_elf_get_obj_attr_int (exec, OBJ_ATTR_PROC,
++						Tag_CPU_arch_profile);
++		}
++
+ 	      /* GCC specifies the profile for v6-M; RealView only
+ 		 specifies the profile for architectures starting with
+ 		 V7 (as opposed to architectures with a tag
+-		 numerically greater than TAG_CPU_ARCH_V7).  */
+-	      if (!tdesc_has_registers (tdesc)
+-		  && (attr_arch == TAG_CPU_ARCH_V6_M
+-		      || attr_arch == TAG_CPU_ARCH_V6S_M
+-		      || attr_profile == 'M'))
++		 numerically greater than TAG_CPU_ARCH_V7).
++
++		 The M-profile tag is authoritative even when a tdesc is
++		 present: core sessions synthesize a generic
++		 org.gnu.gdb.arm.core tdesc (with cpsr) for Cortex-M
++		 binaries, and without letting the BFD attribute promote
++		 is_m here arm_psr_thumb_bit picks CPSR_T instead of
++		 XPSR_T, misreading xPSR and forcing arm_frame_is_thumb
++		 to false for Thumb code.  The register-validation block
++		 below accepts either cpsr or xpsr naming when is_m is
++		 true, so this promotion is safe.  */
++	      if (attr_arch == TAG_CPU_ARCH_V6_M
++		  || attr_arch == TAG_CPU_ARCH_V6S_M
++		  || attr_profile == 'M')
+ 		is_m = true;
+ #endif
+ 	    }
+@@ -9149,8 +9179,17 @@
+ 						  ARM_PC_REGNUM,
+ 						  arm_pc_names);
+       if (is_m)
+-	valid_p &= tdesc_numbered_register (feature, tdesc_data.get (),
+-					    ARM_PS_REGNUM, "xpsr");
++	{
++	  /* Prefer the M-profile "xpsr" name, but a core file may supply
++	     the generic org.gnu.gdb.arm.core feature (with "cpsr") even
++	     for a Cortex-M binary; accept either so the M-profile
++	     discriminator (is_m) still applies and arm_psr_thumb_bit
++	     returns XPSR_T.  */
++	  if (!tdesc_numbered_register (feature, tdesc_data.get (),
++					ARM_PS_REGNUM, "xpsr"))
++	    valid_p &= tdesc_numbered_register (feature, tdesc_data.get (),
++						ARM_PS_REGNUM, "cpsr");
++	}
+       else
+ 	valid_p &= tdesc_numbered_register (feature, tdesc_data.get (),
+ 					    ARM_PS_REGNUM, "cpsr");
+--
+2.34.1
