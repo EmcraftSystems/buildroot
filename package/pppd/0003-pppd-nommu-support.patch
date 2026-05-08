@@ -1,0 +1,406 @@
+From: Vladimir Skvortsov <vskvortsov@emcraft.com>
+Date: Thu, 7 May 2026 11:00:00 +0300
+Subject: [PATCH] pppd: noMMU support
+
+uClibc on FDPIC noMMU targets does not export fork(); pppd's main.c
+uses fork() in detach() and in safe_fork() (called from device_script()
+and run_program()). On noMMU we must replace those with vfork()+exec.
+
+vfork() shares the parent's address space with the child until exec*(),
+so the child must reach exec or _exit() without writing back into
+caller-side state. This forces two related changes:
+
+  1. main.c: gate detach()'s self-fork; gate safe_fork() (now dead
+     code on noMMU); add vfork()+exec inline variants of
+     device_script() and run_program(). device_script() execs via
+     /bin/sh -c (matching the upstream MMU path), so connect /
+     disconnect scripts get the same shell argv handling as MMU pppd;
+     in particular, chat invocations with quoted empty expects
+     (e.g. `chat -v "" "AT" "OK" ""`) parse correctly. run_program()
+     execs the program directly via execve() since its callers
+     already pass a parsed argv. The environment-overlay helpers are
+     dropped from both noMMU children -- update_system_environment()
+     from device_script() and update_script_environment() from
+     run_program(): under vfork() the child shares the parent's heap,
+     so setenv()/unsetenv() and the malloc()/realloc() of script_env
+     would mutate parent state. Userenv-set vars ('set NAME=VALUE'
+     pppd option) are therefore MMU-only on this toolchain.
+
+  2. tty.c: change the channel close callback. The vfork()'d child
+     in device_script() calls the_channel->close() before exec; the
+     stock tty_close_fds() does "real_ttyfd = -1", which under vfork
+     mutates the parent's global and leaks the descriptor (RM-3913,
+     emcraft A2F/pppd 2019 fix). Add an int parameter so the close
+     path knows when it is running in a vfork child, and route the
+     channel callback through a new close_tty() wrapper. Also gate
+     out the charshunt code paths (record_file, pty_socket, notty)
+     since they spawn a long-running child that does not exec, which
+     vfork() cannot replace.
+
+Forward-port of the legacy uClinux-dist patch carried in A2F/pppd
+(ppp-2.4.5 base) plus RM-3913. 2.4.9's safe_fork() refactor lets us
+keep that helper untouched on the MMU path and only ifdef-out its
+two callers, instead of fully duplicating each caller as the 2.4.5
+patch had to.
+
+The PPPD_NO_MMU macro is defined from package/pppd/pppd.mk when
+BR2_USE_MMU is unset.
+
+Signed-off-by: Vladimir Skvortsov <vskvortsov@emcraft.com>
+---
+
+diff --git a/pppd/main.c b/pppd/main.c
+@@ -756,6 +756,7 @@
+ 	return;
+     if (pipe(pipefd) == -1)
+ 	pipefd[0] = pipefd[1] = -1;
++#ifndef PPPD_NO_MMU
+     if ((pid = fork()) < 0) {
+ 	error("Couldn't detach (fork failed: %m)");
+ 	die(1);			/* or just return? */
+@@ -769,6 +770,12 @@
+ 	create_linkpidfile(pid);
+ 	exit(0);		/* parent dies */
+     }
++#else
++    /* noMMU: fork() is unavailable, so we cannot self-daemonise.
++     * Stay in foreground; pidfile handling is the launcher's job
++     * in this mode. */
++    (void)pid;
++#endif
+     setsid();
+     chdir("/");
+     dup2(fd_devnull, 0);
+@@ -1498,6 +1505,7 @@
+     die(127);
+ }
+ 
++#ifndef PPPD_NO_MMU
+ /*
+  * safe_fork - Create a child process.  The child closes all the
+  * file descriptors that we don't want to leak to a script.
+@@ -1583,6 +1591,7 @@
+ 
+ 	return 0;
+ }
++#endif /* !PPPD_NO_MMU */
+ 
+ static bool
+ add_script_env(int pos, char *newstring)
+@@ -1635,6 +1644,7 @@
+ int
+ device_script(char *program, int in, int out, int dont_wait)
+ {
++#ifndef PPPD_NO_MMU
+     int pid;
+     int status = -1;
+     int errfd;
+@@ -1684,6 +1694,104 @@
+     perror("pppd: could not exec /bin/sh");
+     _exit(99);
+     /* NOTREACHED */
++#else
++    /* noMMU: fork() is unavailable. Use vfork()+exec inline; the
++     * vfork()'d child shares the parent's address space until exec*(),
++     * so it must reach exec or _exit without writing back into caller
++     * state. Route through /bin/sh -c so chat-style quoted argv
++     * (e.g. `chat -v "" AT OK ""`) parses correctly. */
++    pid_t pid;
++    int status = -1;
++    int fd, errfd;
++
++    ++conn_running;
++    /* must close BEFORE vfork; cannot reliably close from a vfork child */
++    closelog();
++
++    /* make sure fds 0, 1, 2 are occupied (probably not necessary) */
++    while ((fd = dup(fd_devnull)) >= 0) {
++	if (fd > 2) {
++	    close(fd);
++	    break;
++	}
++    }
++
++    pid = vfork();
++    if (pid == 0) {
++	/* child: vfork shares address space with parent until exec*().
++	 * Avoid writing to globals or caller-side locals beyond what
++	 * the kernel needs to set up the child's fd table. */
++	sys_close();
++
++	/* relocate in/out so the dup2() targets won't clobber them */
++	if (in == 1 || in == 2)
++	    in = dup(in);
++	if (out == 0 || out == 2)
++	    out = dup(out);
++
++	if (log_to_fd >= 0)
++	    errfd = log_to_fd;
++	else
++	    errfd = open(_PATH_CONNERRS,
++			 O_WRONLY | O_APPEND | O_CREAT, 0644);
++	if (errfd == 0 || errfd == 1)
++	    errfd = dup(errfd);
++
++	if (in != 0)
++	    dup2(in, 0);
++	if (out != 1)
++	    dup2(out, 1);
++	if (errfd != 2)
++	    dup2(errfd, 2);
++
++	if (log_to_fd > 2)
++	    close(log_to_fd);
++	if (the_channel->close)
++	    (*the_channel->close)();
++	else
++	    close(devfd);
++	close(fd_ppp);
++	close(fd_devnull);
++	if (in != 0)
++	    close(in);
++	if (out != 1)
++	    close(out);
++	if (errfd != 2)
++	    close(errfd);
++
++	setgid(getgid());
++	setuid(uid);
++	if (getuid() != uid)
++	    _exit(1);
++	/* No update_system_environment(): vfork() shares the heap with
++	 * the parent, so setenv() would mutate parent state. Userenv-set
++	 * vars ('set NAME=VALUE' pppd option) are MMU-only. */
++	execl("/bin/sh", "sh", "-c", program, (char *)0);
++	_exit(99);
++    }
++
++    /* parent resumes here only after child has exec'd or _exit'd */
++    reopen_log();
++
++    if (pid < 0) {
++	--conn_running;
++	error("Failed to vfork child process: %m");
++	return -1;
++    }
++
++    record_child(pid, program, NULL, NULL, 1);
++    if (dont_wait)
++	return 0;
++
++    while (waitpid(pid, &status, 0) < 0) {
++	if (errno == EINTR)
++	    continue;
++	fatal("error waiting for (dis)connection process: %m");
++    }
++    forget_child(pid, status);
++    --conn_running;
++    return (status == 0 ? 0 : -1);
++#endif /* PPPD_NO_MMU */
+ }
+ 
+ 
+@@ -1755,6 +1876,7 @@
+ 	return 0;
+     }
+ 
++#ifndef PPPD_NO_MMU
+     pid = safe_fork(fd_devnull, fd_devnull, fd_devnull);
+     if (pid == -1) {
+ 	error("Failed to create child process for %s: %m", prog);
+@@ -1799,6 +1921,64 @@
+ 	closelog();
+     }
+     _exit(99);
++#else
++    /* noMMU: vfork()+execve() inline. Child must reach exec or _exit
++     * without writing parent state. All script fds are redirected to
++     * /dev/null so we don't need to relocate caller-supplied fds. */
++    int new_fd;
++
++    closelog();
++    pid = vfork();
++    if (pid == 0) {
++	/* child */
++	(void) setsid();
++	(void) umask(S_IRWXG | S_IRWXO);
++	(void) chdir("/");
++	setuid(0);
++	setgid(getegid());
++
++	sys_close();
++	close(0);
++	close(1);
++	close(2);
++
++	new_fd = open(_PATH_DEVNULL, O_RDWR);
++	if (new_fd >= 0) {
++	    if (new_fd != 0) {
++		dup2(new_fd, 0);
++		close(new_fd);
++	    }
++	    dup2(0, 1);
++	    dup2(0, 2);
++	}
++
++	/* No update_script_environment(): it malloc()s / realloc()s the
++	 * global script_env, which under vfork() corrupts the parent heap.
++	 * Userenv set/unset overlays are MMU-only (as in device_script). */
++	execve(prog, args, script_env);
++	_exit(must_exist || errno != ENOENT ? 99 : 0);
++    }
++
++    reopen_log();
++
++    if (pid == -1) {
++	error("Failed to vfork child process for %s: %m", prog);
++	return -1;
++    }
++
++    if (debug)
++	dbglog("Script %s started (pid %d)", prog, pid);
++    record_child(pid, prog, done, arg, 0);
++    if (wait) {
++	while (waitpid(pid, &status, 0) < 0) {
++	    if (errno == EINTR)
++		continue;
++	    fatal("error waiting for script %s: %m", prog);
++	}
++	forget_child(pid, status);
++    }
++    return pid;
++#endif /* PPPD_NO_MMU */
+ }
+ 
+ 
+diff --git a/pppd/tty.c b/pppd/tty.c
+@@ -99,8 +99,9 @@
+ void tty_check_options(void);
+ int  connect_tty(void);
+ void disconnect_tty(void);
+-void tty_close_fds(void);
++void tty_close_fds(int);
+ void cleanup_tty(void);
++void close_tty(void);
+ void tty_do_send_config(int, u_int32_t, int, int);
+ 
+ static int setdevname(char *, char **, int);
+@@ -109,12 +110,14 @@
+ static int setescape(char **);
+ static void printescape(option_t *, void (*)(void *, char *,...),void *);
+ static void finish_tty(void);
++#ifndef PPPD_NO_MMU
+ static int start_charshunt(int, int);
+ static void stop_charshunt(void *, int);
+ static void charshunt_done(void *);
+ static void charshunt(int, int, char *);
+ static int record_write(FILE *, int code, u_char *buf, int nb,
+ 			struct timeval *);
++#endif
+ static int open_socket(char *);
+ static void maybe_relock(void *, int);
+ 
+@@ -254,7 +257,7 @@
+ 	&tty_do_send_config,
+ 	&tty_recv_config,
+ 	&cleanup_tty,
+-	&tty_close_fds
++	&close_tty
+ };
+ 
+ /*
+@@ -613,6 +616,7 @@
+ 	 */
+ 	status = EXIT_PTYCMD_FAILED;
+ 	if (ptycommand != NULL) {
++#ifndef PPPD_NO_MMU
+ 		if (record_file != NULL) {
+ 			int ipipe[2], opipe[2], ok;
+ 
+@@ -632,8 +636,10 @@
+ 			if (!ok)
+ 				goto errret;
+ 		} else {
++#endif
+ 			if (device_script(ptycommand, pty_master, pty_master, 1) < 0)
+ 				goto errret;
++#ifndef PPPD_NO_MMU
+ 		}
+ 	} else if (pty_socket != NULL) {
+ 		int fd = open_socket(pty_socket);
+@@ -655,6 +661,7 @@
+ 		int fd = dup(ttyfd);
+ 		if (!start_charshunt(fd, fd))
+ 			goto errret;
++#endif
+ 	}
+ 
+ 	if (using_pty || record_file != NULL) {
+@@ -770,16 +777,24 @@
+ 	} else {
+ 		info("Serial link disconnected.");
+ 	}
++#ifndef PPPD_NO_MMU
+ 	stop_charshunt(NULL, 0);
++#endif
+ }
+ 
+-void tty_close_fds(void)
++void tty_close_fds(int vfork_child)
+ {
+ 	if (pty_slave >= 0)
+ 		close(pty_slave);
+ 	if (real_ttyfd >= 0) {
+ 		close(real_ttyfd);
+-		real_ttyfd = -1;
++		/*
++		 * Don't touch real_ttyfd from a vfork()'d child:
++		 * the global is shared with the parent until exec*(),
++		 * and the parent still needs to close it on its own.
++		 */
++		if (!vfork_child)
++			real_ttyfd = -1;
+ 	}
+ 	/* N.B. ttyfd will == either pty_slave or real_ttyfd */
+ }
+@@ -788,13 +803,26 @@
+ {
+ 	if (real_ttyfd >= 0)
+ 		finish_tty();
+-	tty_close_fds();
++	tty_close_fds(0);
+ 	if (locked) {
+ 		unlock();
+ 		locked = 0;
+ 	}
+ }
+ 
++void close_tty(void)
++{
++#ifndef PPPD_NO_MMU
++	tty_close_fds(0);
++#else
++	/*
++	 * On noMMU the channel close() callback always runs from a
++	 * vfork()'d child (device_script(), run_program()).
++	 */
++	tty_close_fds(1);
++#endif
++}
++
+ /*
+  * tty_do_send_config - set transmit-side PPP configuration.
+  * We set the extended transmit ACCM here as well.
+@@ -899,6 +927,7 @@
+ }
+ 
+ 
++#ifndef PPPD_NO_MMU
+ /*
+  * start_charshunt - create a child process to run the character shunt.
+  */
+@@ -1233,3 +1262,4 @@
+     }
+     return 1;
+ }
++#endif /* !PPPD_NO_MMU */
