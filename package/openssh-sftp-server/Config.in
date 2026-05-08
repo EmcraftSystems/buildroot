@@ -1,0 +1,12 @@
+config BR2_PACKAGE_OPENSSH_SFTP_SERVER
+	bool "openssh-sftp-server"
+	select BR2_PACKAGE_ZLIB
+	help
+	  SFTP server from OpenSSH. This is a standalone helper program
+	  that handles SFTP protocol over stdin/stdout, typically spawned
+	  by an SSH server (e.g., dropbear) on incoming SFTP connections.
+
+	  Unlike the full openssh package, sftp-server does not use
+	  fork() and works on noMMU targets.
+
+	  https://www.openssh.com/
