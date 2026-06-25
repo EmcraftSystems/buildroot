@@ -1,0 +1,14 @@
+config BR2_PACKAGE_BT_TOOLS
+	bool "bt-tools (legacy BlueZ 2.25 + OBEX)"
+	depends on !BR2_STATIC_LIBS
+	help
+	  Legacy Bluetooth user-space stack: BlueZ 2.25 (hcid, sdpd,
+	  hcitool, sdptool, rfcomm), OpenOBEX and obexftp. Classic BR/EDR
+	  only, no BLE.
+
+	  noMMU/FDPIC capable: built with fork() redefined to vfork(). The
+	  source tree is supplied via BT_TOOLS_OVERRIDE_SRCDIR, the same way
+	  busybox is built from an in-tree source.
+
+comment "bt-tools needs a toolchain w/ dynamic library support"
+	depends on BR2_STATIC_LIBS

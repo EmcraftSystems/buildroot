@@ -2203,6 +2203,7 @@ endif
 	source "package/bird/Config.in"
 	source "package/bluez-tools/Config.in"
 	source "package/bluez5_utils/Config.in"
+	source "package/bt-tools/Config.in"
 	source "package/bmon/Config.in"
 	source "package/bmx7/Config.in"
 	source "package/boinc/Config.in"
