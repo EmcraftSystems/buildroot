@@ -1,0 +1,119 @@
+From: Vladimir Skvortsov <vskvortsov@emcraft.com>
+Date: Wed, 24 Jun 2026 12:06:28 +0200
+Subject: [PATCH] wpa_supplicant: noMMU support
+
+uClibc on FDPIC noMMU targets does not export fork(); os_exec() in
+src/utils/os_unix.c uses fork() to run external action scripts (e.g.
+wpa_cli -a <script>). Linking wpa_supplicant against such a toolchain
+fails with an undefined reference to fork(), which is why the buildroot
+package is gated on BR2_USE_MMU.
+
+Replace fork() with vfork(). Under vfork() the child shares the parent's
+address space and the parent is suspended until the child reaches
+execv()/_exit(), so the child must not write back into caller-side
+state. The argv construction (which calls os_strdup()) is moved into the
+parent ahead of the vfork(), leaving the child to call only execv() and
+_exit(). vfork() is exported on both MMU and noMMU uClibc/glibc, so the
+change is unconditional and does not need an MMU gate.
+
+os_daemonize() (the other potential fork() user, via daemon()) is left
+unchanged: uClibc exports daemon() on this target so it links, and the
+rootfs does not start wpa_supplicant with -B.
+
+Signed-off-by: Vladimir Skvortsov <vskvortsov@emcraft.com>
+---
+
+diff --git a/src/utils/os_unix.c b/src/utils/os_unix.c
+--- a/src/utils/os_unix.c
++++ b/src/utils/os_unix.c
+@@ -803,47 +803,59 @@
+ {
+ 	pid_t pid;
+ 	int pid_status;
++	const int MAX_ARG = 30;
++	char *_program, *_arg, *pos;
++	char *argv[MAX_ARG + 1];
++	int i;
++
++	/*
++	 * noMMU targets have no fork(); use vfork() instead. Under vfork() the
++	 * child shares the parent's address space and the parent is suspended
++	 * until the child calls _exit() or one of the exec functions, so the
++	 * child must touch nothing but those. Build argv in the parent up front
++	 * and restrict the child to execv()/_exit().
++	 */
++	_program = os_strdup(program);
++	_arg = os_strdup(arg);
++	if (_program == NULL || _arg == NULL) {
++		os_free(_program);
++		os_free(_arg);
++		return -1;
++	}
++
++	argv[0] = _program;
++
++	i = 1;
++	pos = _arg;
++	while (i < MAX_ARG && pos && *pos) {
++		while (*pos == ' ')
++			pos++;
++		if (*pos == '\0')
++			break;
++		argv[i++] = pos;
++		pos = os_strchr(pos, ' ');
++		if (pos)
++			*pos++ = '\0';
++	}
++	argv[i] = NULL;
+ 
+-	pid = fork();
++	pid = vfork();
+ 	if (pid < 0) {
+-		perror("fork");
++		perror("vfork");
++		os_free(_program);
++		os_free(_arg);
+ 		return -1;
+ 	}
+ 
+ 	if (pid == 0) {
+ 		/* run the external command in the child process */
+-		const int MAX_ARG = 30;
+-		char *_program, *_arg, *pos;
+-		char *argv[MAX_ARG + 1];
+-		int i;
+-
+-		_program = os_strdup(program);
+-		_arg = os_strdup(arg);
+-
+-		argv[0] = _program;
+-
+-		i = 1;
+-		pos = _arg;
+-		while (i < MAX_ARG && pos && *pos) {
+-			while (*pos == ' ')
+-				pos++;
+-			if (*pos == '\0')
+-				break;
+-			argv[i++] = pos;
+-			pos = os_strchr(pos, ' ');
+-			if (pos)
+-				*pos++ = '\0';
+-		}
+-		argv[i] = NULL;
+-
+ 		execv(program, argv);
+-		perror("execv");
+-		os_free(_program);
+-		os_free(_arg);
+-		exit(0);
+-		return -1;
++		_exit(127);
+ 	}
+ 
++	os_free(_program);
++	os_free(_arg);
++
+ 	if (wait_completion) {
+ 		/* wait for the child process to complete in the parent */
+ 		waitpid(pid, &pid_status, 0);
