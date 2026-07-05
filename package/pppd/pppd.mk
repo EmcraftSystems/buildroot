@@ -37,6 +37,17 @@ PPPD_DEPENDENCIES += libpcap
 PPPD_MAKE_OPTS += FILTER=y
 endif
 
+# noMMU: pppd cannot use fork() or dlopen(). Disable plugin support and
+# replace -DHAVE_MMAP with -DPPPD_NO_MMU so the noMMU vfork()-based
+# device_script() / run_program() / charshunt fallbacks engage.
+ifeq ($(BR2_USE_MMU),)
+PPPD_MAKE_OPTS += PLUGIN=
+define PPPD_NOMMU_PATCH_BUILD
+	$(SED) 's/-DHAVE_MMAP/-DPPPD_NO_MMU/' $(@D)/pppd/Makefile.linux
+endef
+PPPD_POST_EXTRACT_HOOKS += PPPD_NOMMU_PATCH_BUILD
+endif
+
 # pppd bundles some but not all of the needed kernel headers. The embedded
 # if_pppol2tp.h is unfortunately not compatible with kernel headers > 2.6.34,
 # and has been part of the kernel headers since 2.6.23, so drop it
@@ -96,11 +107,8 @@ define PPPD_INSTALL_RADIUS
 endef
 endif
 
-define PPPD_INSTALL_TARGET_CMDS
-	for sbin in $(PPPD_TARGET_BINS); do \
-		$(INSTALL) -D $(PPPD_DIR)/$$sbin/$$sbin \
-			$(TARGET_DIR)/usr/sbin/$$sbin; \
-	done
+ifeq ($(BR2_PACKAGE_PPPD_PLUGINS),y)
+define PPPD_INSTALL_PLUGINS
 	$(INSTALL) -D $(PPPD_DIR)/pppd/plugins/minconn.so \
 		$(TARGET_DIR)/usr/lib/pppd/$(PPPD_VERSION)/minconn.so
 	$(INSTALL) -D $(PPPD_DIR)/pppd/plugins/passprompt.so \
@@ -119,6 +127,15 @@ define PPPD_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/lib/pppd/$(PPPD_VERSION)/openl2tp.so
 	$(INSTALL) -D $(PPPD_DIR)/pppd/plugins/pppol2tp/pppol2tp.so \
 		$(TARGET_DIR)/usr/lib/pppd/$(PPPD_VERSION)/pppol2tp.so
+endef
+endif
+
+define PPPD_INSTALL_TARGET_CMDS
+	for sbin in $(PPPD_TARGET_BINS); do \
+		$(INSTALL) -D $(PPPD_DIR)/$$sbin/$$sbin \
+			$(TARGET_DIR)/usr/sbin/$$sbin; \
+	done
+	$(PPPD_INSTALL_PLUGINS)
 	$(INSTALL) -D -m 0755 $(PPPD_DIR)/scripts/pon $(TARGET_DIR)/usr/bin/pon
 	$(INSTALL) -D -m 0755 $(PPPD_DIR)/scripts/poff $(TARGET_DIR)/usr/bin/poff
 	$(PPPD_INSTALL_RADIUS)

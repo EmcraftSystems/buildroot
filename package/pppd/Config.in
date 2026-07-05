@@ -1,7 +1,6 @@
 config BR2_PACKAGE_PPPD
 	bool "pppd"
 	depends on !BR2_STATIC_LIBS
-	depends on BR2_USE_MMU
 	select BR2_PACKAGE_OPENSSL if BR2_TOOLCHAIN_USES_GLIBC
 	select BR2_PACKAGE_LIBOPENSSL_ENABLE_DES if BR2_PACKAGE_LIBOPENSSL
 	help
@@ -10,6 +9,16 @@ config BR2_PACKAGE_PPPD
 	  http://www.samba.org/ppp/
 
 if BR2_PACKAGE_PPPD
+
+config BR2_PACKAGE_PPPD_PLUGINS
+	bool "plugins"
+	depends on BR2_USE_MMU
+	default y
+	help
+	  Build and install pppd plugins (pppoe, pppol2tp, radius,
+	  passprompt, passwordfd, winbind, etc.) as shared objects
+	  loaded at runtime via dlopen(). Disabled on noMMU targets,
+	  where dynamic loading is not available.
 
 config BR2_PACKAGE_PPPD_FILTER
 	bool "filtering"
@@ -21,6 +30,7 @@ config BR2_PACKAGE_PPPD_FILTER
 
 config BR2_PACKAGE_PPPD_RADIUS
 	bool "radius"
+	depends on BR2_PACKAGE_PPPD_PLUGINS
 	help
 	  Install RADIUS support for pppd
 
@@ -40,4 +50,3 @@ endif
 
 comment "pppd needs a toolchain w/ dynamic library"
 	depends on BR2_STATIC_LIBS
-	depends on BR2_USE_MMU
