@@ -1,0 +1,8 @@
+config BR2_PACKAGE_CAN_TESTS
+	bool "can-tests"
+	help
+	  Test programs for the Linux SocketCAN stack: raw, BCM,
+	  gateway and netlayer tests such as tst-raw, tst-filter and
+	  tst-rcv-own-msgs.
+
+	  https://github.com/linux-can/can-tests
