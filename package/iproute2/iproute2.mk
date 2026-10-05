@@ -38,10 +38,8 @@ ifeq ($(BR2_PACKAGE_BERKELEYDB_COMPAT185),y)
 IPROUTE2_DEPENDENCIES += berkeleydb
 endif
 
-# noMMU: no fork() and no dlopen(). Build ip, tc and genl with their link
-# types resolved at link time (SHARED_LIBS=n), and drop libtirpc, which
-# configure links whenever it happens to be staged already: the result
-# would depend on build order.
+# noMMU: no fork() or dlopen(), so SHARED_LIBS=n; drop libtirpc, which
+# configure links only if it happens to be staged first.
 ifeq ($(BR2_USE_MMU),)
 IPROUTE2_SHARED_LIBS = n
 IPROUTE2_NOMMU_CFLAGS = -DIPROUTE2_NO_MMU
