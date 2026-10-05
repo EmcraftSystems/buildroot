@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Vladimir Khusainov <vlad@emcraft.com>
+Date: Mon, 5 Oct 2026 10:53:24 +0300
+Subject: [PATCH] servers: serve one session per run without an MMU
+
+bcmserver, canlogserver and isotpserver fork() a child for every
+accepted client, and the child serves it without exec. uClibc on FDPIC
+noMMU targets does not export fork(), and vfork() cannot stand in for a
+child that does not exec.
+
+When CAN_UTILS_NO_MMU is defined, skip the fork() and serve the accepted
+client in the same process. Each run then serves one session:
+bcmserver exits when the client closes; canlogserver is ended by
+SIGPIPE on a CAN frame written after the client has gone.
+
+CAN_UTILS_NO_MMU is defined by package/can-utils/can-utils.mk when
+BR2_USE_MMU is unset.
+
+Signed-off-by: Vladimir Khusainov <vlad@emcraft.com>
+---
+ bcmserver.c    | 4 ++++
+ canlogserver.c | 4 ++++
+ isotpserver.c  | 4 ++++
+ 3 files changed, 12 insertions(+)
+
+diff --git a/bcmserver.c b/bcmserver.c
+index 8b8288a..785b358 100644
+--- a/bcmserver.c
++++ b/bcmserver.c
+@@ -197,8 +197,12 @@ int main(void)
+ 	while (1) { 
+ 		sa = accept(sl,(struct sockaddr *)&clientaddr, &sin_size);
+ 		if (sa > 0 ){
++#ifdef CAN_UTILS_NO_MMU
++			break;
++#else
+ 			if (!fork())
+ 				break;
++#endif
+ 			close(sa);
+ 		}
+ 		else {
+diff --git a/canlogserver.c b/canlogserver.c
+index 6425ca4..d2c74c1 100644
+--- a/canlogserver.c
++++ b/canlogserver.c
+@@ -298,8 +298,12 @@ int main(int argc, char **argv)
+ 		accsocket = accept(socki, (struct sockaddr*)&clientaddr, &sin_size);
+ 		if (accsocket > 0) {
+ 			//printf("accepted\n");
++#ifdef CAN_UTILS_NO_MMU
++			break;
++#else
+ 			if (!fork())
+ 				break;
++#endif
+ 			close(accsocket);
+ 		}
+ 		else if (errno != EINTR) {
+diff --git a/isotpserver.c b/isotpserver.c
+index ed61bb2..113694e 100644
+--- a/isotpserver.c
++++ b/isotpserver.c
+@@ -317,8 +317,12 @@ int main(int argc, char **argv)
+ 	while (1) { 
+ 		sa = accept(sl,(struct sockaddr *)&clientaddr, &sin_size);
+ 		if (sa > 0 ){
++#ifdef CAN_UTILS_NO_MMU
++			break;
++#else
+ 			if (!fork())
+ 				break;
++#endif
+ 			close(sa);
+ 		}
+ 		else {
+-- 
+2.24.3 (Apple Git-128)
+

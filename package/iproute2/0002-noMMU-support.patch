@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Vladimir Khusainov <vlad@emcraft.com>
+Date: Mon, 5 Oct 2026 10:54:11 +0300
+Subject: [PATCH] noMMU support
+
+uClibc on FDPIC noMMU targets does not export fork(). iproute2 calls it
+in four places:
+
+  1. lib/exec.c cmd_exec(), behind `ip netns exec` and `ip vrf exec`:
+     the child execs, so use vfork(). The child runs setup() first;
+     if that fails it must _exit() rather than return into the
+     parent's stack frame.
+
+  2-4. misc/ifstat.c, misc/nstat.c, misc/rtacct.c server_loop(): in
+     daemon mode (-d) each client is served by a forked child that
+     does not exec, which vfork() cannot replace. Refuse -d, and treat
+     the unreachable fork() as a failed one so the files link.
+
+IPROUTE2_NO_MMU is defined by package/iproute2/iproute2.mk when
+BR2_USE_MMU is unset.
+
+Signed-off-by: Vladimir Khusainov <vlad@emcraft.com>
+---
+ lib/exec.c    | 9 ++++++++-
+ misc/ifstat.c | 8 ++++++++
+ misc/nstat.c  | 8 ++++++++
+ misc/rtacct.c | 8 ++++++++
+ 4 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/lib/exec.c b/lib/exec.c
+index 9b1c8f4..591e5ef 100644
+--- a/lib/exec.c
++++ b/lib/exec.c
+@@ -15,7 +15,11 @@ int cmd_exec(const char *cmd, char **argv, bool do_fork,
+ 		int status;
+ 		pid_t pid;
+ 
++#ifdef IPROUTE2_NO_MMU
++		pid = vfork();
++#else
+ 		pid = fork();
++#endif
+ 		if (pid < 0) {
+ 			perror("fork");
+ 			exit(1);
+@@ -36,8 +40,11 @@ int cmd_exec(const char *cmd, char **argv, bool do_fork,
+ 		}
+ 	}
+ 
+-	if (setup && setup(arg))
++	if (setup && setup(arg)) {
++		if (do_fork)
++			_exit(1);
+ 		return -1;
++	}
+ 
+ 	if (execvp(cmd, argv)  < 0)
+ 		fprintf(stderr, "exec of \"%s\" failed: %s\n",
+diff --git a/misc/ifstat.c b/misc/ifstat.c
+index d4a3342..beaa51d 100644
+--- a/misc/ifstat.c
++++ b/misc/ifstat.c
+@@ -698,7 +698,11 @@ static void server_loop(int fd)
+ 
+ 				if (children >= 5) {
+ 					close(clnt);
++#ifdef IPROUTE2_NO_MMU
++				} else if ((pid = -1) != 0) {
++#else
+ 				} else if ((pid = fork()) != 0) {
++#endif
+ 					if (pid > 0)
+ 						children++;
+ 					close(clnt);
+@@ -850,6 +854,10 @@ int main(int argc, char *argv[])
+ 			pretty = 1;
+ 			break;
+ 		case 'd':
++#ifdef IPROUTE2_NO_MMU
++			fprintf(stderr, "ifstat: -d is not supported without MMU\n");
++			exit(-1);
++#endif
+ 			scan_interval = atoi(optarg) * 1000;
+ 			if (scan_interval <= 0) {
+ 				fprintf(stderr, "ifstat: invalid scan interval\n");
+diff --git a/misc/nstat.c b/misc/nstat.c
+index 7160c59..6996721 100644
+--- a/misc/nstat.c
++++ b/misc/nstat.c
+@@ -510,7 +510,11 @@ static void server_loop(int fd)
+ 
+ 				if (children >= 5) {
+ 					close(clnt);
++#ifdef IPROUTE2_NO_MMU
++				} else if ((pid = -1) != 0) {
++#else
+ 				} else if ((pid = fork()) != 0) {
++#endif
+ 					if (pid > 0)
+ 						children++;
+ 					close(clnt);
+@@ -603,6 +607,10 @@ int main(int argc, char *argv[])
+ 			no_output = 1;
+ 			break;
+ 		case 'd':
++#ifdef IPROUTE2_NO_MMU
++			fprintf(stderr, "nstat: -d is not supported without MMU\n");
++			exit(-1);
++#endif
+ 			scan_interval = 1000*atoi(optarg);
+ 			break;
+ 		case 't':
+diff --git a/misc/rtacct.c b/misc/rtacct.c
+index 47b27e3..9ada82e 100644
+--- a/misc/rtacct.c
++++ b/misc/rtacct.c
+@@ -387,7 +387,11 @@ static void server_loop(int fd)
+ 
+ 				if (children >= 5) {
+ 					close(clnt);
++#ifdef IPROUTE2_NO_MMU
++				} else if ((pid = -1) != 0) {
++#else
+ 				} else if ((pid = fork()) != 0) {
++#endif
+ 					if (pid > 0)
+ 						children++;
+ 					close(clnt);
+@@ -452,6 +456,10 @@ int main(int argc, char *argv[])
+ 			no_output = 1;
+ 			break;
+ 		case 'd':
++#ifdef IPROUTE2_NO_MMU
++			fprintf(stderr, "rtacct: -d is not supported without MMU\n");
++			exit(-1);
++#endif
+ 			scan_interval = 1000*atoi(optarg);
+ 			break;
+ 		case 't':
+-- 
+2.24.3 (Apple Git-128)
+

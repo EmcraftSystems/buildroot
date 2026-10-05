@@ -38,17 +38,30 @@ ifeq ($(BR2_PACKAGE_BERKELEYDB_COMPAT185),y)
 IPROUTE2_DEPENDENCIES += berkeleydb
 endif
 
+# noMMU: no fork() or dlopen(), so SHARED_LIBS=n; drop libtirpc, which
+# configure links only if it happens to be staged first.
+ifeq ($(BR2_USE_MMU),)
+IPROUTE2_SHARED_LIBS = n
+IPROUTE2_NOMMU_CFLAGS = -DIPROUTE2_NO_MMU
+define IPROUTE2_NOMMU_DISABLE_TIRPC
+	$(SED) '/^HAVE_RPC:=/d;/-ltirpc/d;/-DHAVE_RPC/d' $(@D)/config.mk
+endef
+else
+IPROUTE2_SHARED_LIBS = $(if $(BR2_STATIC_LIBS),n,y)
+endif
+
 define IPROUTE2_CONFIGURE_CMDS
 	cd $(@D) && $(TARGET_CONFIGURE_OPTS) ./configure
 	$(IPROUTE2_DISABLE_IPTABLES)
+	$(IPROUTE2_NOMMU_DISABLE_TIRPC)
 endef
 
 define IPROUTE2_BUILD_CMDS
 	$(TARGET_MAKE_ENV) LDFLAGS="$(TARGET_LDFLAGS)" \
-		CFLAGS="$(TARGET_CFLAGS) -DXT_LIB_DIR=\\\"/usr/lib/xtables\\\"" \
+		CFLAGS="$(TARGET_CFLAGS) $(IPROUTE2_NOMMU_CFLAGS) -DXT_LIB_DIR=\\\"/usr/lib/xtables\\\"" \
 		CBUILD_CFLAGS="$(HOST_CFLAGS)" $(MAKE) V=1 LIBDB_LIBS=-lpthread \
 		DBM_INCLUDE="$(STAGING_DIR)/usr/include" \
-		SHARED_LIBS="$(if $(BR2_STATIC_LIBS),n,y)" -C $(@D)
+		SHARED_LIBS="$(IPROUTE2_SHARED_LIBS)" -C $(@D)
 endef
 
 define IPROUTE2_INSTALL_TARGET_CMDS
