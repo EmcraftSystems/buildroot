@@ -2212,6 +2212,7 @@ endif
 	source "package/bwm-ng/Config.in"
 	source "package/c-icap/Config.in"
 	source "package/c-icap-modules/Config.in"
+	source "package/can-tests/Config.in"
 	source "package/can-utils/Config.in"
 	source "package/cannelloni/Config.in"
 	source "package/casync/Config.in"
